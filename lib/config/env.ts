@@ -9,6 +9,12 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),
   BACKEND_COOKIE_SECRET: z.string().min(32),
   ALLOWED_ORIGINS: z.string().min(1),
+  SQUARESPACE_API_KEY: z.string().min(1),
+  SQUARESPACE_WEBHOOK_SECRET: z.string().optional(),
+  SQUARESPACE_MEMBERSHIP_MONTHLY_PRODUCT_IDS: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_ANNUAL_PRODUCT_IDS: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_PURCHASE_URL: z.string().url().optional(),
+  SQUARESPACE_SYNC_ADMIN_SECRET: z.string().min(1),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development')
 });
 
