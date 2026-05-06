@@ -54,6 +54,12 @@ Apply `supabase/migrations/*.sql` manually via Supabase CLI or SQL editor.
 6. Confirm generation allowed.
 7. Repeat with annual membership.
 8. Confirm unrelated Squarespace products do not grant access.
+
+## Squarespace webhook subscription auth requirement
+- `SQUARESPACE_API_KEY` alone is **not sufficient** for creating webhook subscriptions.
+- Squarespace Webhook Subscriptions API requires OAuth authentication.
+- Set `SQUARESPACE_OAUTH_ACCESS_TOKEN` before calling `POST /api/admin/squarespace/create-webhook`.
+- The site owner must obtain a Squarespace OAuth access token with Commerce Orders permission before using the temporary setup endpoint.
 Centralized Next.js App Router backend for AHEA frontend tools. The browser never decides access; Supabase/Postgres is the source of truth.
 
 ## Security model

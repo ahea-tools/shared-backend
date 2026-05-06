@@ -10,6 +10,7 @@ const envSchema = z.object({
   BACKEND_COOKIE_SECRET: z.string().min(32),
   ALLOWED_ORIGINS: z.string().min(1),
   SQUARESPACE_API_KEY: z.string().default(''),
+  SQUARESPACE_OAUTH_ACCESS_TOKEN: z.string().default(''),
   SQUARESPACE_WEBHOOK_SECRET: z.string().optional(),
   SQUARESPACE_MEMBERSHIP_MONTHLY_PRODUCT_IDS: z.string().default(''),
   SQUARESPACE_MEMBERSHIP_ANNUAL_PRODUCT_IDS: z.string().default(''),

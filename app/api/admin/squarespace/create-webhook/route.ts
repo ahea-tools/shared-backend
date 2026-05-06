@@ -18,13 +18,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  const apiKey = process.env.SQUARESPACE_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ success: false, message: 'Squarespace API key is not configured.' }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
+  const oauthAccessToken = process.env.SQUARESPACE_OAUTH_ACCESS_TOKEN;
+  if (!oauthAccessToken) {
+    return NextResponse.json({ success: false, message: 'SQUARESPACE_OAUTH_ACCESS_TOKEN is required to create Squarespace webhook subscriptions.' }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
   }
 
   const headers = {
-    Authorization: `Bearer ${apiKey}`,
+    Authorization: `Bearer ${oauthAccessToken}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
     'User-Agent': 'AHEA Shared Backend'
