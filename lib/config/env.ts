@@ -15,6 +15,7 @@ const envSchema = z.object({
   SQUARESPACE_MEMBERSHIP_ANNUAL_PRODUCT_IDS: z.string().default(''),
   SQUARESPACE_MEMBERSHIP_PURCHASE_URL: z.string().url().optional(),
   SQUARESPACE_SYNC_ADMIN_SECRET: z.string().default(''),
+  ADMIN_SETUP_ENABLED: z.enum(['true','false']).default('false'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development')
 });
 
