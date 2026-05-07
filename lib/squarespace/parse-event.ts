@@ -7,7 +7,7 @@ export type ParsedSquarespaceEvent = {
   providerProductId?: string; providerVariantId?: string;
   billingInterval?: 'monthly' | 'annual' | 'unknown';
   status?: 'active' | 'past_due' | 'canceled' | 'expired' | 'refunded' | 'unknown';
-  currentPeriodStart?: string; currentPeriodEnd?: string; cancelAtPeriodEnd?: boolean;
+  currentPeriodStart?: string; currentPeriodEnd?: string; cancelAtPeriodEnd?: boolean; matchSource?: 'id' | 'matcher';
 };
 
 export function parseSquarespaceEvent(payload: any, headers: Headers): ParsedSquarespaceEvent {
@@ -26,6 +26,7 @@ export function parseSquarespaceEvent(payload: any, headers: Headers): ParsedSqu
     providerCustomerId: order?.customerId ? String(order.customerId) : undefined,
     providerProductId: matched.productId, providerVariantId: matched.variantId,
     billingInterval: matched.billingInterval,
+    matchSource: matched.matchSource,
     status: payload?.refund ? 'refunded' : (order?.status === 'canceled' ? 'canceled' : 'active'),
     currentPeriodStart: order?.periodStart,
     currentPeriodEnd: order?.periodEnd,

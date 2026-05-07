@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getSquarespaceAccessToken } from '@/lib/squarespace/oauth';
 
 const TARGET_ENDPOINT = 'https://api.americanhealthequity.org/api/webhooks/squarespace';
 const TOPICS = ['order.create', 'order.update'];
@@ -18,13 +19,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
   }
 
-  const oauthAccessToken = process.env.SQUARESPACE_OAUTH_ACCESS_TOKEN;
-  if (!oauthAccessToken) {
-    return NextResponse.json({ success: false, message: 'SQUARESPACE_OAUTH_ACCESS_TOKEN is required to create Squarespace webhook subscriptions.' }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
-  }
+  const tokenResult = getSquarespaceAccessToken();
+  if (!tokenResult.ok) return NextResponse.json({ success: false, message: tokenResult.message }, { status: 400, headers: { 'Cache-Control': 'no-store' } });
 
   const headers = {
-    Authorization: `Bearer ${oauthAccessToken}`,
+    Authorization: `Bearer ${tokenResult.token}`,
     Accept: 'application/json',
     'Content-Type': 'application/json',
     'User-Agent': 'AHEA Shared Backend'
