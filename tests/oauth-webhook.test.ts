@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import crypto from 'node:crypto';
 import { buildSquarespaceAuthorizeUrl, verifySquarespaceOAuthState, getSquarespaceAccessToken } from '@/lib/squarespace/oauth';
 import { findMembershipLineItem } from '@/lib/squarespace/membership-products';
+import { verifySquarespaceWebhook } from '@/lib/squarespace/verify-webhook';
 
 vi.stubEnv('BACKEND_COOKIE_SECRET', 'x'.repeat(32));
 
@@ -32,5 +34,35 @@ describe('membership matcher', () => {
     vi.stubEnv('SQUARESPACE_MEMBERSHIP_MONTHLY_MATCHERS', 'explicit monthly matcher');
     const out = findMembershipLineItem([{ name: 'random thing' }]);
     expect(out).toBeNull();
+  });
+});
+
+describe('webhook signature verification', () => {
+  const secretHex = 'aabbccddeeff00112233445566778899';
+  const body = '{"hello":"world"}';
+  const validSig = crypto.createHmac('sha256', Buffer.from(secretHex, 'hex')).update(body).digest('hex');
+
+  it('valid signature succeeds when secret is hex-decoded', () => {
+    expect(verifySquarespaceWebhook(body, validSig, secretHex).ok).toBe(true);
+  });
+  it('using same secret as utf8 would fail', () => {
+    const utf8Sig = crypto.createHmac('sha256', secretHex).update(body).digest('hex');
+    expect(utf8Sig).not.toBe(validSig);
+  });
+  it('invalid signature fails', () => {
+    const res = verifySquarespaceWebhook(body, '00', secretHex);
+    expect(res.ok).toBe(false);
+  });
+  it('missing signature fails', () => {
+    const res = verifySquarespaceWebhook(body, null, secretHex);
+    expect(res.ok).toBe(false);
+  });
+  it('header name can be read case-insensitively by route via Headers API', () => {
+    const h = new Headers({ 'Squarespace-Signature': validSig });
+    expect(h.get('squarespace-signature')).toBe(validSig);
+  });
+  it('raw body mutation causes failure', () => {
+    const res = verifySquarespaceWebhook(body + ' ', validSig, secretHex);
+    expect(res.ok).toBe(false);
   });
 });

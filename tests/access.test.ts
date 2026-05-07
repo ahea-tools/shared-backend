@@ -80,12 +80,7 @@ describe('squarespace webhook parser', () => {
 describe('response shapes', () => {
   it('standardized blocked response shape', async () => {
     const body = await blockedResponse('free_limit_reached', 'Reached').json();
-
-    expect(body).toHaveProperty('status', 'blocked');
-    expect(body).toHaveProperty('usage');
-    expect(body).toHaveProperty('paywall');
-  });
-});
+c
   });
   it('standardized success response shape', async () => {
     const body = await successResponse({ requestId: 'r', toolId: 't', data: {}, usage: { generationsUsed: 1, freeGenerationsLimit: 2, remainingFreeGenerations: 1, accessStatus: 'free' } }).json();

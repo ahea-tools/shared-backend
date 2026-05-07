@@ -8,8 +8,20 @@ export async function POST(req: NextRequest) {
   const env = getEnv();
   const rawBody = await req.text();
   if (env.NODE_ENV === 'production' && !env.SQUARESPACE_WEBHOOK_SECRET) return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Webhook secret required in production.' }, { status: 500 });
-  const signature = req.headers.get('x-squarespace-signature');
-  if (env.SQUARESPACE_WEBHOOK_SECRET && !verifySquarespaceWebhook(rawBody, signature, env.SQUARESPACE_WEBHOOK_SECRET)) return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Invalid signature.' }, { status: 401 });
+  const signature = req.headers.get('Squarespace-Signature') ?? req.headers.get('x-squarespace-signature');
+  const verification = verifySquarespaceWebhook(rawBody, signature, env.SQUARESPACE_WEBHOOK_SECRET ?? '');
+  console.info('squarespace_webhook_verification', {
+    secretConfigured: Boolean(env.SQUARESPACE_WEBHOOK_SECRET),
+    secretLength: env.SQUARESPACE_WEBHOOK_SECRET?.trim().length ?? 0,
+    signaturePresent: Boolean(signature),
+    signatureLength: signature?.trim().length ?? 0,
+    verificationResult: verification.ok,
+    reason: verification.ok ? 'ok' : verification.reason
+  });
+  if (!verification.ok) {
+    if (verification.reason === 'invalid_hex_secret') console.warn('webhook secret is not valid hex');
+    return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Invalid signature.' }, { status: 401 });
+  }
   const payload = JSON.parse(rawBody || '{}');
   const parsed = parseSquarespaceEvent(payload, req.headers);
   const supa = getSupabaseAdmin();
