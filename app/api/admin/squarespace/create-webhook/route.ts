@@ -9,7 +9,9 @@ const WEBHOOK_SUBSCRIPTIONS_URL = 'https://api.squarespace.com/1.0/webhook_subsc
 // Disable ADMIN_SETUP_ENABLED once Squarespace webhook setup is complete.
 export async function POST(req: NextRequest) {
   const setupEnabled = process.env.ADMIN_SETUP_ENABLED === 'true';
-  if (!setupEnabled) return NextResponse.json({ success: false }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+  if (!setupEnabled) {
+    return NextResponse.json({ success: false }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+  }
 
   const adminSecret = process.env.SQUARESPACE_SYNC_ADMIN_SECRET;
   const provided = req.headers.get('x-admin-secret');

@@ -78,6 +78,7 @@ export async function POST(req: NextRequest) {
     console.error('entitlement upsert failure', { code: entitlement.error.code, message: entitlement.error.message });
     return NextResponse.json({ status: 'error', message: 'Failed to persist membership entitlement.' }, { status: 500 });
   }
-  console.info('entitlement upsert success');
+  console.info('entitlement upsert success', { eventId: parsed.eventId });
+
   return NextResponse.json({ status: 'success', processed: true });
 }
