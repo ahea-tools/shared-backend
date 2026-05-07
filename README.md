@@ -88,6 +88,13 @@ Warnings:
 - Refresh token is single-use and rotates.
 - If refresh persistence is not implemented, rerun setup when needed.
 - Routine incoming webhook receipt uses `SQUARESPACE_WEBHOOK_SECRET`, not OAuth.
+
+## How to find Squarespace membership matchers
+1. Make one monthly and one annual test purchase.
+2. Open `webhook_events` in Supabase.
+3. Inspect `metadata.descriptorFields`, `metadata.productIds`, `metadata.variantIds`, `metadata.skus`, `metadata.lineItemNames`, `metadata.planNames`, and `metadata.membershipAreaNames`.
+4. Put exact monthly/annual values into `SQUARESPACE_MEMBERSHIP_MONTHLY_MATCHERS` and `SQUARESPACE_MEMBERSHIP_ANNUAL_MATCHERS`, or use product/variant ID env vars.
+5. Redeploy and retest.
 Centralized Next.js App Router backend for AHEA frontend tools. The browser never decides access; Supabase/Postgres is the source of truth.
 
 ## Security model

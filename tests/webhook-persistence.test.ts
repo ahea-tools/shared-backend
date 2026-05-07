@@ -16,19 +16,21 @@ const matched = { eventId: 'e3', eventType: 'order.create', relevant: true, emai
 describe('webhook persistence', () => {
   it('verified unrelated webhook creates webhook_events ignored', async () => {
     const s = mockSupa();
-    await persistWebhookEvent(s, unrelated, {});
+    await persistWebhookEvent(s, unrelated, {}, { descriptorFields: ['Monthly Plan'], emailSourcePath: 'payload.data.order.email', emailFound: false });
     expect(s.insert).toHaveBeenCalled();
     expect(s.insert.mock.calls[0][0].processed_status).toBe('ignored');
   });
   it('verified missing-email webhook creates ignored row', async () => {
     const s = mockSupa();
-    await persistWebhookEvent(s, missingEmail, {});
+    await persistWebhookEvent(s, missingEmail, {}, { descriptorFields: ['Annual Access'], emailFound: false });
     expect(s.insert.mock.calls[0][0].error).toBe('missing_email');
   });
   it('verified membership webhook creates webhook_events row', async () => {
     const s = mockSupa();
-    await persistWebhookEvent(s, matched, {});
+    await persistWebhookEvent(s, matched, {}, { descriptorFields: ['Monthly Plan'], productIds: ['p1'], emailFound: true, emailSourcePath: 'payload.data.order.customerEmail' });
     expect(s.insert.mock.calls[0][0].processed_status).toBe('processed');
+    expect(s.insert.mock.calls[0][0].metadata.descriptorFields).toContain('Monthly Plan');
+    expect(JSON.stringify(s.insert.mock.calls[0][0].metadata)).not.toContain('a@b.com');
   });
   it('verified membership webhook attempts entitlement upsert', async () => {
     const s = mockSupa();

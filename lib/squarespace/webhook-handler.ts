@@ -8,10 +8,10 @@ export type SupabaseLike = {
   };
 };
 
-export async function persistWebhookEvent(supa: SupabaseLike, parsed: ParsedSquarespaceEvent, payload: unknown) {
+export async function persistWebhookEvent(supa: SupabaseLike, parsed: ParsedSquarespaceEvent, payload: unknown, metadata: Record<string, unknown> | null = null) {
   const status = parsed.relevant ? 'processed' : 'ignored';
   const reason = parsed.relevant ? null : (parsed.ignoredReason ?? 'unsupported_event_type');
-  const res = await supa.from('webhook_events').insert({ provider: 'squarespace', event_id: parsed.eventId, event_type: parsed.eventType, payload, processed_status: status, processed_at: new Date().toISOString(), error: reason });
+  const res = await supa.from('webhook_events').insert({ provider: 'squarespace', event_id: parsed.eventId, event_type: parsed.eventType, payload, processed_status: status, processed_at: new Date().toISOString(), error: reason, metadata });
   return res;
 }
 

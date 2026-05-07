@@ -40,10 +40,30 @@ export async function POST(req: NextRequest) {
   console.info('descriptor count', { count: descriptor.fields.length });
   console.info('membership match result', { relevant: parsed.relevant, matchSource: parsed.matchSource ?? null, ignoredReason: parsed.ignoredReason ?? null });
   console.info('parsed event', { eventId: parsed.eventId, eventType: parsed.eventType });
+  const safeMetadata = {
+    eventId: parsed.eventId,
+    eventType: parsed.eventType,
+    providerOrderId: parsed.providerOrderId ?? null,
+    emailFound: Boolean(parsed.email),
+    emailSourcePath: parsed.emailSourcePath ?? null,
+    orderFetchAttempted,
+    orderFetchSuccess,
+    processedStatus: parsed.relevant ? 'processed' : 'ignored',
+    ignoredReason: parsed.ignoredReason ?? null,
+    descriptorFields: descriptor.fields,
+    productIds: descriptor.productIds,
+    variantIds: descriptor.variantIds,
+    skus: descriptor.skus,
+    lineItemNames: descriptor.fields.filter((f) => f),
+    planNames: descriptor.fields.filter((f) => /plan/i.test(f)),
+    membershipAreaNames: descriptor.fields.filter((f) => /membership/i.test(f)),
+    matchSource: parsed.matchSource ?? null,
+    billingInterval: parsed.billingInterval ?? null
+  };
 
   const supa = getSupabaseAdmin();
   console.info('webhook_events insert attempted');
-  const eventInsert = await persistWebhookEvent(supa as any, parsed, payload);
+  const eventInsert = await persistWebhookEvent(supa as any, parsed, payload, safeMetadata);
   if (eventInsert.error) {
     console.error('webhook_events insert failure', { code: eventInsert.error.code, message: eventInsert.error.message });
     return NextResponse.json({ status: 'error', message: 'Failed to persist webhook event.' }, { status: 500 });
