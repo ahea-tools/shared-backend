@@ -18,7 +18,7 @@ export function parseSquarespaceEvent(payload: any, headers: Headers): ParsedSqu
   const matched = findMembershipLineItem(lines);
   const email = (order?.customerEmail ?? order?.email ?? payload?.customer?.email ?? '').toLowerCase().trim();
   if (!email) return { eventId, eventType, relevant: false, ignoredReason: 'missing_email' };
-  if (!matched) return { eventId, eventType, relevant: false, ignoredReason: 'non_membership_product', email };
+  if (!matched) return { eventId, eventType, relevant: false, ignoredReason: 'no_membership_match', email };
   return {
     eventId, eventType, relevant: true, email,
     providerOrderId: order?.id ? String(order.id) : undefined,
