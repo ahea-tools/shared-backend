@@ -7,8 +7,8 @@ export type ParsedSquarespaceEvent = {
   providerOrderId?: string; providerSubscriptionId?: string; providerCustomerId?: string;
   providerProductId?: string; providerVariantId?: string;
   billingInterval?: 'monthly' | 'annual' | 'unknown'; status?: 'active' | 'past_due' | 'canceled' | 'expired' | 'refunded' | 'unknown';
-  currentPeriodStart?: string; currentPeriodEnd?: string; cancelAtPeriodEnd?: boolean; matchSource?: 'id' | 'matcher';
-  emailSourcePath?: string | null; descriptorCount?: number;
+  currentPeriodStart?: string; currentPeriodEnd?: string; cancelAtPeriodEnd?: boolean; matchSource?: 'id' | 'matcher' | 'shared_product_price';
+  emailSourcePath?: string | null; descriptorCount?: number; pricePathUsed?: string | null; currencyUsed?: string | null;
 };
 
 export function parseSquarespaceEvent(payload: any, headers: Headers, fullOrder?: any): ParsedSquarespaceEvent {
@@ -39,6 +39,8 @@ export function parseSquarespaceEvent(payload: any, headers: Headers, fullOrder?
     currentPeriodEnd: order?.periodEnd,
     cancelAtPeriodEnd: Boolean(order?.cancelAtPeriodEnd),
     emailSourcePath: emailExtract.sourcePath,
-    descriptorCount: descriptor.fields.length
+    descriptorCount: descriptor.fields.length,
+    pricePathUsed: (matched as any)?.pricePathUsed ?? null,
+    currencyUsed: (matched as any)?.currencyUsed ?? null
   };
 }

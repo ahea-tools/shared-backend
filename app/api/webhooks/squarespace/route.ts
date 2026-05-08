@@ -60,6 +60,11 @@ export async function POST(req: NextRequest) {
     membershipAreaNames: descriptor.fields.filter((f) => /membership/i.test(f)),
     matchSource: parsed.matchSource ?? null,
     billingInterval: parsed.billingInterval ?? null,
+    priceFallbackAttempted: true,
+    priceFallbackMatched: parsed.matchSource === 'shared_product_price',
+    priceFallbackInterval: parsed.matchSource === 'shared_product_price' ? parsed.billingInterval : null,
+    pricePathUsed: parsed.pricePathUsed ?? null,
+    currencyUsed: parsed.currencyUsed ?? null,
     ...diagnostic
   };
 

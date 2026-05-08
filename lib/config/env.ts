@@ -23,6 +23,10 @@ const envSchema = z.object({
   SQUARESPACE_MEMBERSHIP_PURCHASE_URL: z.string().url().optional(),
   SQUARESPACE_MEMBERSHIP_MONTHLY_MATCHERS: z.string().default(''),
   SQUARESPACE_MEMBERSHIP_ANNUAL_MATCHERS: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_SHARED_PRODUCT_IDS: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_MONTHLY_PRICE_VALUES: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_ANNUAL_PRICE_VALUES: z.string().default(''),
+  SQUARESPACE_MEMBERSHIP_PRICE_CURRENCY: z.string().default('USD'),
   SQUARESPACE_SYNC_ADMIN_SECRET: z.string().default(''),
   ADMIN_SETUP_ENABLED: z.enum(['true','false']).default('false'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development')
