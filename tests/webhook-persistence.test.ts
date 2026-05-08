@@ -19,6 +19,7 @@ describe('webhook persistence', () => {
     await persistWebhookEvent(s, unrelated, {}, { descriptorFields: ['Monthly Plan'], emailSourcePath: 'payload.data.order.email', emailFound: false });
     expect(s.insert).toHaveBeenCalled();
     expect(s.insert.mock.calls[0][0].processed_status).toBe('ignored');
+    expect(s.insert.mock.calls[0][0].metadata.descriptorFields).toContain('Monthly Plan');
   });
   it('verified missing-email webhook creates ignored row', async () => {
     const s = mockSupa();

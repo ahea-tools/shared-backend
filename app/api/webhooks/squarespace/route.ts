@@ -4,7 +4,7 @@ import { verifySquarespaceWebhook } from '@/lib/squarespace/verify-webhook';
 import { parseSquarespaceEvent } from '@/lib/squarespace/parse-event';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { persistMembershipEntitlement, persistWebhookEvent } from '@/lib/squarespace/webhook-handler';
-import { extractEmailFromSquarespacePayload, extractSafeMembershipDescriptors, extractSquarespaceOrderId, fetchSquarespaceOrder } from '@/lib/squarespace/orders';
+import { extractEmailFromSquarespacePayload, extractSafeDiagnosticMetadata, extractSafeMembershipDescriptors, extractSquarespaceOrderId, fetchSquarespaceOrder } from '@/lib/squarespace/orders';
 
 export async function POST(req: NextRequest) {
   const env = getEnv();
@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
   console.info('descriptor count', { count: descriptor.fields.length });
   console.info('membership match result', { relevant: parsed.relevant, matchSource: parsed.matchSource ?? null, ignoredReason: parsed.ignoredReason ?? null });
   console.info('parsed event', { eventId: parsed.eventId, eventType: parsed.eventType });
+  const diagnostic = extractSafeDiagnosticMetadata(payload, fullOrder);
   const safeMetadata = {
     eventId: parsed.eventId,
     eventType: parsed.eventType,
@@ -58,7 +59,8 @@ export async function POST(req: NextRequest) {
     planNames: descriptor.fields.filter((f) => /plan/i.test(f)),
     membershipAreaNames: descriptor.fields.filter((f) => /membership/i.test(f)),
     matchSource: parsed.matchSource ?? null,
-    billingInterval: parsed.billingInterval ?? null
+    billingInterval: parsed.billingInterval ?? null,
+    ...diagnostic
   };
 
   const supa = getSupabaseAdmin();

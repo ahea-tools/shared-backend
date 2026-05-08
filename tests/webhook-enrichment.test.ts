@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { extractEmailFromSquarespacePayload, extractSquarespaceOrderId } from '@/lib/squarespace/orders';
+import { extractEmailFromSquarespacePayload, extractSafeDiagnosticMetadata, extractSquarespaceOrderId } from '@/lib/squarespace/orders';
 import { parseSquarespaceEvent } from '@/lib/squarespace/parse-event';
 import * as orders from '@/lib/squarespace/orders';
 
@@ -23,5 +23,25 @@ describe('webhook enrichment parsing', () => {
     vi.spyOn(orders, 'fetchSquarespaceOrder').mockResolvedValue({ ok: false, reason: 'order_fetch_failed' } as any);
     const fetched = await orders.fetchSquarespaceOrder('o1');
     expect(fetched.ok).toBe(false);
+  });
+
+  it('captures nested variant option value like Monthly', () => {
+    const meta = extractSafeDiagnosticMetadata({ data: { order: { lineItems: [{ variantOptionValues: [{ name: 'Cadence', value: 'Monthly' }] }] } } });
+    expect(JSON.stringify(meta.variantOptionFields)).toContain('Monthly');
+  });
+  it('captures billing interval month/year/annual', () => {
+    const meta = extractSafeDiagnosticMetadata({ data: { order: { billingInterval: 'annual', recurrence: 'year' } } });
+    expect(JSON.stringify(meta.billingCadenceFields)).toContain('annual');
+  });
+  it('captures pricing option ID if present', () => {
+    const meta = extractSafeDiagnosticMetadata({ data: { order: { lineItems: [{ pricingOptionId: 'po_123' }] } } });
+    expect(JSON.stringify(meta.safeIdentifierPaths)).toContain('po_123');
+  });
+  it('does not capture email/address/payment fields', () => {
+    const meta = extractSafeDiagnosticMetadata({ data: { order: { customerEmail: 'x@y.com', billingAddress: { line1: '123' }, paymentCardLast4: '1111' } } });
+    const str = JSON.stringify(meta);
+    expect(str).not.toContain('x@y.com');
+    expect(str).not.toContain('123');
+    expect(str).not.toContain('1111');
   });
 });

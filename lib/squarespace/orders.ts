@@ -70,3 +70,62 @@ export async function fetchSquarespaceOrder(orderId: string): Promise<{ ok: true
   }
   return { ok: false, reason: 'order_fetch_failed' };
 }
+
+
+function truncate(v: string) { return v.length > 120 ? v.slice(0, 120) : v; }
+
+export function extractSafeDiagnosticMetadata(payload: any, fullOrder: any = null) {
+  const sources: Array<{ root: string; obj: any }> = [{ root: 'payload', obj: payload }];
+  if (fullOrder) sources.push({ root: 'fullOrder', obj: fullOrder });
+  const safeDescriptorPaths: Array<{ path: string; value: string }> = [];
+  const safeIdentifierPaths: Array<{ path: string; value: string }> = [];
+  const subscriptionFields: Array<{ path: string; value: string }> = [];
+  const billingCadenceFields: Array<{ path: string; value: string }> = [];
+  const variantOptionFields: Array<{ path: string; value: string }> = [];
+  const pricingOptionFields: Array<{ path: string; value: string }> = [];
+  const lineItemShapeKeys = new Set<string>();
+  const fullOrderShapeKeys = new Set<string>();
+  const identifiers = new Set<string>();
+
+  const allowRegex = /(product|variant|sku|line.?item|plan|pricing.?option|subscription|membership.?area|billing.?interval|billing.?period|recurrence|cadence|frequency|option)/i;
+  const denyRegex = /(email|address|phone|card|payment|transaction|customer)/i;
+
+  function walk(v: any, path: string) {
+    if (v == null) return;
+    if (Array.isArray(v)) return v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    if (typeof v === 'object') {
+      Object.keys(v).forEach((k) => {
+        if (/line.?items?/i.test(path)) lineItemShapeKeys.add(k);
+        if (path.startsWith('fullOrder')) fullOrderShapeKeys.add(k);
+        walk(v[k], `${path}.${k}`);
+      });
+      return;
+    }
+    const val = truncate(String(v));
+    if (!allowRegex.test(path) || denyRegex.test(path)) return;
+    if (/id$/i.test(path) || /(productId|variantId|sku|pricingOptionId)/i.test(path)) {
+      safeIdentifierPaths.push({ path, value: val });
+      identifiers.add(val.toLowerCase());
+    } else {
+      safeDescriptorPaths.push({ path, value: val });
+    }
+    if (/subscription|membership.?area/i.test(path)) subscriptionFields.push({ path, value: val });
+    if (/billing.?interval|billing.?period|recurrence|cadence|frequency|month|year|annual/i.test(path)) billingCadenceFields.push({ path, value: val });
+    if (/variant.*option|option.*value|option.*name/i.test(path)) variantOptionFields.push({ path, value: val });
+    if (/pricing.?option/i.test(path)) pricingOptionFields.push({ path, value: val });
+  }
+
+  for (const src of sources) walk(src.obj, src.root);
+
+  return {
+    safeDescriptorPaths,
+    safeIdentifierPaths,
+    subscriptionFields,
+    billingCadenceFields,
+    variantOptionFields,
+    pricingOptionFields,
+    lineItemShapeKeys: [...lineItemShapeKeys],
+    fullOrderShapeKeys: [...fullOrderShapeKeys],
+    productIdsNotDistinct: identifiers.size <= 1
+  };
+}
