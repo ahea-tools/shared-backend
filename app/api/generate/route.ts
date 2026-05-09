@@ -4,14 +4,18 @@ import { blockedResponse, FREE_GENERATIONS_LIMIT, successResponse } from '@/lib/
 import { generateSchema } from '@/lib/validation/schemas';
 import { getTool } from '@/lib/config/tools';
 import { runGeneration } from '@/lib/openai/generate';
-import { getEnv } from '@/lib/config/env';
+import { preflightResponse, withCors } from '@/lib/security/cors';
 
 export async function POST(req: NextRequest) {
   const parsed = generateSchema.safeParse(await req.json());
-  if (!parsed.success) return blockedResponse('invalid_request', 'Invalid generation request.');
+  if (!parsed.success) return withCors(req, blockedResponse('invalid_request', 'Invalid generation request.'));
   const tool = getTool(parsed.data.toolId);
-  if (!tool) return blockedResponse('invalid_tool', 'The requested tool is not available.');
-  if (parsed.data.input.length > tool.maxInputChars) return blockedResponse('invalid_request', 'Input exceeds allowed length for this tool.');
+  if (!tool) return withCors(req, blockedResponse('invalid_tool', 'The requested tool is not available.'));
+  if (parsed.data.input.length > tool.maxInputChars) return withCors(req, blockedResponse('invalid_request', 'Input exceeds allowed length for this tool.'));
   const result = await runGeneration(tool, parsed.data.input);
-  return successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: { output: result.outputText }, usage: { generationsUsed: 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: 2, accessStatus: 'free' } });
+  return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: { output: result.outputText }, usage: { generationsUsed: 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: 2, accessStatus: 'free' } }));
+}
+
+export async function OPTIONS(req: NextRequest) {
+  return preflightResponse(req);
 }
