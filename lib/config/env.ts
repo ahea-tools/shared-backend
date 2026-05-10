@@ -8,6 +8,7 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1),
   OPENAI_API_KEY: z.string().min(1),
   BACKEND_COOKIE_SECRET: z.string().min(32),
+  AUTH_CALLBACK_URL: z.string().url().default('https://api.americanhealthequity.org/api/auth/callback'),
   ALLOWED_ORIGINS: z.string().min(1),
   SQUARESPACE_API_KEY: z.string().default(''),
   SQUARESPACE_OAUTH_CLIENT_ID: z.string().default(''),
