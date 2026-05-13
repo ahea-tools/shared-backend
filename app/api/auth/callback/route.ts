@@ -10,6 +10,10 @@ function resolveOtpType(type: string | null): 'magiclink' | 'email' {
   return 'email';
 }
 
+function hasRequiredSupabaseAdminEnv() {
+  return Boolean(process.env.SUPABASE_URL) && Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
 export async function GET(req: NextRequest) {
   const returnTo = validateReturnTo(req.nextUrl.searchParams.get('return_to'));
   const tokenHash = req.nextUrl.searchParams.get('token_hash');
@@ -19,14 +23,28 @@ export async function GET(req: NextRequest) {
   console.info('[auth/callback] callback reached', {
     hasReturnTo: Boolean(returnTo),
     format: tokenHash ? 'token_hash' : code ? 'code' : 'unsupported',
-    supabaseType: type && SUPABASE_OTP_TYPES.has(type) ? type : 'unknown'
+    supabaseType: type && SUPABASE_OTP_TYPES.has(type) ? type : 'unknown',
+    hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
+    hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
   });
+
+  if (!hasRequiredSupabaseAdminEnv()) {
+    console.error('[auth/callback] missing required Supabase admin env vars', {
+      required: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
+    });
+    return NextResponse.json(
+      { status: 'error', reason: 'server_misconfigured', message: 'Missing required auth configuration.' },
+      { status: 500 }
+    );
+  }
+
+  const supabaseAdmin = getSupabaseAdmin();
 
   let verifiedUserId: string | null = null;
   let verifiedEmail: string | null = null;
 
   if (tokenHash) {
-    const { data, error } = await getSupabaseAdmin().auth.verifyOtp({
+    const { data, error } = await supabaseAdmin.auth.verifyOtp({
       token_hash: tokenHash,
       type: resolveOtpType(type)
     });
@@ -46,7 +64,7 @@ export async function GET(req: NextRequest) {
     verifiedUserId = data.user.id;
     verifiedEmail = data.user.email;
   } else if (code) {
-    const { data, error } = await getSupabaseAdmin().auth.exchangeCodeForSession(code);
+    const { data, error } = await supabaseAdmin.auth.exchangeCodeForSession(code);
 
     if (error || !data.user?.email) {
       console.error('[auth/callback] exchangeCodeForSession failed', {
