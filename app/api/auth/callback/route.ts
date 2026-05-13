@@ -84,23 +84,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Missing callback credentials.' }, { status: 400 });
   }
 
-  console.info('[auth/callback] profile write attempt', {
-    usingServiceRoleClient: true,
-    table: 'profiles',
-    hasUserId: Boolean(verifiedUserId),
-    hasEmail: Boolean(verifiedEmail)
-  });
-
-  const { error: upsertError } = await supabaseAdmin
+  const { error: upsertError } = await getSupabaseAdmin()
     .from('profiles')
-    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true, updated_at: new Date().toISOString() }, { onConflict: 'id', ignoreDuplicates: false });
+    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true }, { onConflict: 'id', ignoreDuplicates: false });
 
   if (upsertError) {
     console.error('[auth/callback] profile upsert failed', {
       code: upsertError.code ?? 'unknown',
-      message: upsertError.message ?? 'profile upsert failed',
-      details: upsertError.details ?? 'none',
-      hint: upsertError.hint ?? 'none'
+      message: upsertError.message ?? 'profile upsert failed'
     });
     return NextResponse.json({ status: 'error', reason: 'server_error', message: 'Could not persist verified user.' }, { status: 500 });
   }
