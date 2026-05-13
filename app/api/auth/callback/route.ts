@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
-import { setBackendSession } from '@/lib/auth/session';
+import { setBackendSessionOnResponse } from '@/lib/auth/session';
 import { validateReturnTo } from '@/lib/auth/return-to';
 
 const SUPABASE_OTP_TYPES = new Set(['signup', 'magiclink', 'recovery', 'invite', 'email_change', 'email']);
@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
   const type = req.nextUrl.searchParams.get('type');
 
-  console.info('[auth/callback] callback payload format', {
+  console.info('[auth/callback] callback reached', {
     hasReturnTo: Boolean(returnTo),
     format: tokenHash ? 'token_hash' : code ? 'code' : 'unsupported',
     supabaseType: type && SUPABASE_OTP_TYPES.has(type) ? type : 'unknown'
@@ -35,11 +35,14 @@ export async function GET(req: NextRequest) {
       console.error('[auth/callback] verifyOtp failed', {
         code: error?.code ?? 'unknown',
         status: error?.status ?? 'unknown',
-        message: error?.message ?? 'verification failed'
+        message: error?.message ?? 'verification failed',
+        hadUser: Boolean(data.user),
+        hadEmail: Boolean(data.user?.email)
       });
       return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
     }
 
+    console.info('[auth/callback] supabase verification succeeded', { hadUser: true, hadEmail: true, mode: 'token_hash' });
     verifiedUserId = data.user.id;
     verifiedEmail = data.user.email;
   } else if (code) {
@@ -49,20 +52,43 @@ export async function GET(req: NextRequest) {
       console.error('[auth/callback] exchangeCodeForSession failed', {
         code: error?.code ?? 'unknown',
         status: error?.status ?? 'unknown',
-        message: error?.message ?? 'code exchange failed'
+        message: error?.message ?? 'code exchange failed',
+        hadUser: Boolean(data.user),
+        hadEmail: Boolean(data.user?.email)
       });
       return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
     }
 
+    console.info('[auth/callback] supabase verification succeeded', { hadUser: true, hadEmail: true, mode: 'code' });
     verifiedUserId = data.user.id;
     verifiedEmail = data.user.email;
   } else {
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Missing callback credentials.' }, { status: 400 });
   }
 
-  await getSupabaseAdmin().from('profiles').upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true }, { onConflict: 'id', ignoreDuplicates: false });
-  await setBackendSession(verifiedUserId, verifiedEmail);
+  const { error: upsertError } = await getSupabaseAdmin()
+    .from('profiles')
+    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true }, { onConflict: 'id', ignoreDuplicates: false });
 
-  if (returnTo) return NextResponse.redirect(returnTo);
-  return NextResponse.json({ status: 'success', message: 'Email verified and session established.' });
+  if (upsertError) {
+    console.error('[auth/callback] profile upsert failed', {
+      code: upsertError.code ?? 'unknown',
+      message: upsertError.message ?? 'profile upsert failed'
+    });
+    return NextResponse.json({ status: 'error', reason: 'server_error', message: 'Could not persist verified user.' }, { status: 500 });
+  }
+  console.info('[auth/callback] profile upsert succeeded');
+
+  const response = returnTo
+    ? NextResponse.redirect(returnTo)
+    : NextResponse.json({ status: 'success', message: 'Email verified and session established.' });
+
+  setBackendSessionOnResponse(response, verifiedUserId, verifiedEmail);
+  console.info('[auth/callback] session cookie attached', {
+    cookieAttached: response.cookies.has('ahea_session'),
+    redirectOrigin: returnTo ? new URL(returnTo).origin : null,
+    redirectPath: returnTo ? new URL(returnTo).pathname : null
+  });
+
+  return response;
 }

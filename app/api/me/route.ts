@@ -6,7 +6,13 @@ import { getSupabaseAdmin } from '@/lib/supabase/server';
 
 export async function GET(req: NextRequest) {
   const session = await getBackendSession();
+  const hasSessionCookie = Boolean(req.headers.get('cookie')?.includes('ahea_session='));
   const origin = req.nextUrl.origin;
+
+  console.info('[api/me] session check', {
+    hasSessionCookie,
+    sessionVerified: Boolean(session?.userId)
+  });
 
   let email: string | null = null;
   let emailVerified = false;
@@ -20,10 +26,13 @@ export async function GET(req: NextRequest) {
       .eq('id', session.userId)
       .maybeSingle();
     if (profile) {
+      console.info('[api/me] profile hydration succeeded', { hasEmail: Boolean(profile.email), emailVerified: Boolean(profile.email_verified) });
       email = profile.email;
       emailVerified = Boolean(profile.email_verified);
       generationsUsed = Number(profile.generations_used || 0);
       accessStatus = profile.access_status || 'free';
+    } else {
+      console.info('[api/me] profile hydration skipped_or_missing', { hasSessionUserId: Boolean(session?.userId) });
     }
   }
 
