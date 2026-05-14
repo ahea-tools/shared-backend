@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin, isServiceRoleClientConfiguredSafely } from '@/lib/supabase/server';
+import { detectConfiguredSupabaseRole, getSupabaseAdmin, isServiceRoleClientConfiguredSafely } from '@/lib/supabase/server';
 import { setBackendSessionOnResponse } from '@/lib/auth/session';
 import { validateReturnTo } from '@/lib/auth/return-to';
 
@@ -52,6 +52,16 @@ export async function GET(req: NextRequest) {
     );
   }
 
+
+  const configuredAdminRole = detectConfiguredSupabaseRole();
+  if (configuredAdminRole !== 'service_role') {
+    console.error('[auth/callback] admin role check failed', { adminRoleDetected: configuredAdminRole });
+    return NextResponse.json(
+      { status: 'error', reason: 'server_misconfigured', message: 'Admin database client is not using service role.' },
+      { status: 500 }
+    );
+  }
+
   let verifiedUserId: string | null = null;
   let verifiedEmail: string | null = null;
 
@@ -98,6 +108,7 @@ export async function GET(req: NextRequest) {
 
   console.info('[auth/callback] profile write attempt', {
     usingServiceRoleClient: isServiceRoleClientConfiguredSafely(),
+    adminRoleDetected: configuredAdminRole,
     table: 'profiles',
     hasUserId: Boolean(verifiedUserId),
     hasEmail: Boolean(verifiedEmail)
@@ -112,7 +123,8 @@ export async function GET(req: NextRequest) {
       code: upsertError.code ?? 'unknown',
       message: upsertError.message ?? 'profile upsert failed',
       details: upsertError.details ?? 'none',
-      hint: upsertError.hint ?? 'none'
+      hint: upsertError.hint ?? 'none',
+      adminRoleDetected: configuredAdminRole
     });
     return NextResponse.json({ status: 'error', reason: 'server_error', message: 'Could not persist verified user.' }, { status: 500 });
   }
