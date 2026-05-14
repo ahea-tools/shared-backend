@@ -3,6 +3,7 @@ import { z } from 'zod';
 const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  SUPABASE_ANON_KEY: z.string().optional(),
   SUPABASE_JWT_SECRET: z.string().min(1),
   UPSTASH_REDIS_REST_URL: z.string().url(),
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1),
