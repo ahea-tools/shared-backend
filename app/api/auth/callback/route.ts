@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase/server';
+import { getSupabaseAdmin, isServiceRoleClientConfiguredSafely } from '@/lib/supabase/server';
 import { setBackendSessionOnResponse } from '@/lib/auth/session';
 import { validateReturnTo } from '@/lib/auth/return-to';
 
@@ -38,7 +38,19 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const supabaseAdmin = getSupabaseAdmin();
+  let supabaseAdmin;
+  try {
+    supabaseAdmin = getSupabaseAdmin();
+  } catch (error) {
+    console.error('[auth/callback] invalid Supabase admin configuration', {
+      message: error instanceof Error ? error.message : 'invalid configuration',
+      required: ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
+    });
+    return NextResponse.json(
+      { status: 'error', reason: 'server_misconfigured', message: 'Missing required auth configuration.' },
+      { status: 500 }
+    );
+  }
 
   let verifiedUserId: string | null = null;
   let verifiedEmail: string | null = null;
@@ -84,14 +96,23 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Missing callback credentials.' }, { status: 400 });
   }
 
-  const { error: upsertError } = await getSupabaseAdmin()
+  console.info('[auth/callback] profile write attempt', {
+    usingServiceRoleClient: isServiceRoleClientConfiguredSafely(),
+    table: 'profiles',
+    hasUserId: Boolean(verifiedUserId),
+    hasEmail: Boolean(verifiedEmail)
+  });
+
+  const { error: upsertError } = await supabaseAdmin
     .from('profiles')
-    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true }, { onConflict: 'id', ignoreDuplicates: false });
+    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true, updated_at: new Date().toISOString() }, { onConflict: 'id', ignoreDuplicates: false });
 
   if (upsertError) {
     console.error('[auth/callback] profile upsert failed', {
       code: upsertError.code ?? 'unknown',
-      message: upsertError.message ?? 'profile upsert failed'
+      message: upsertError.message ?? 'profile upsert failed',
+      details: upsertError.details ?? 'none',
+      hint: upsertError.hint ?? 'none'
     });
     return NextResponse.json({ status: 'error', reason: 'server_error', message: 'Could not persist verified user.' }, { status: 500 });
   }
