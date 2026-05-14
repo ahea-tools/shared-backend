@@ -1,26 +1,40 @@
 import { cookies } from 'next/headers';
+import { NextResponse } from 'next/server';
 import { getEnv } from '@/lib/config/env';
 import { signSessionValue, verifySessionValue } from '@/lib/auth/cookies';
 
 const SESSION_COOKIE = 'ahea_session';
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 
-export async function setBackendSession(userId: string, email: string) {
-  const payload = JSON.stringify({ userId, email: email.toLowerCase(), iat: Date.now() });
-  const signed = signSessionValue(Buffer.from(payload).toString('base64url'), getEnv().BACKEND_COOKIE_SECRET);
-  const jar = await cookies();
-  jar.set(SESSION_COOKIE, signed, {
+function getSessionCookieOptions(maxAge: number) {
+  return {
     httpOnly: true,
     secure: true,
-    sameSite: 'lax',
+    sameSite: 'none' as const,
     path: '/',
-    maxAge: SESSION_TTL_SECONDS
-  });
+    maxAge
+  };
+}
+
+function buildSignedSession(userId: string, email: string) {
+  const payload = JSON.stringify({ userId, email: email.toLowerCase(), iat: Date.now() });
+  return signSessionValue(Buffer.from(payload).toString('base64url'), getEnv().BACKEND_COOKIE_SECRET);
+}
+
+export async function setBackendSession(userId: string, email: string) {
+  const signed = buildSignedSession(userId, email);
+  const jar = await cookies();
+  jar.set(SESSION_COOKIE, signed, getSessionCookieOptions(SESSION_TTL_SECONDS));
+}
+
+export function setBackendSessionOnResponse(response: NextResponse, userId: string, email: string) {
+  const signed = buildSignedSession(userId, email);
+  response.cookies.set(SESSION_COOKIE, signed, getSessionCookieOptions(SESSION_TTL_SECONDS));
 }
 
 export async function clearBackendSession() {
   const jar = await cookies();
-  jar.set(SESSION_COOKIE, '', { httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: 0 });
+  jar.set(SESSION_COOKIE, '', getSessionCookieOptions(0));
 }
 
 export async function getBackendSession() {
