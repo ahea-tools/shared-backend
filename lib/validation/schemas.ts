@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const emailSchema = z.object({ email: z.string().email() });
 export const verifySchema = z.object({ token: z.string().min(1), type: z.enum(['magiclink', 'otp']).default('otp') });
 
-const strategicMessagingOutputSchema = z.object({
+export const strategicMessagingOutputSchema = z.object({
   strategicRewrite: z.string(),
   whatChangedAndWhy: z.array(z.string()),
   intentPreservationCheck: z.string(),

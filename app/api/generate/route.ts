@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { blockedResponse, FREE_GENERATIONS_LIMIT, successResponse } from '@/lib/responses/api-responses';
-import { generateSchema, strategicMessagingInputSchema } from '@/lib/validation/schemas';
+import { generateSchema, strategicMessagingInputSchema, strategicMessagingOutputSchema } from '@/lib/validation/schemas';
 import { getTool } from '@/lib/config/tools';
 import { runGeneration } from '@/lib/openai/generate';
 import { preflightResponse, withCors } from '@/lib/security/cors';
@@ -33,6 +33,10 @@ function toIssueDetails(issues: Array<{ path: (string | number)[]; message: stri
 
 function invalidRequest(message: string, details: Array<{ path: string; message: string }> = []) {
   return NextResponse.json({ status: 'error', reason: 'invalid_request', message, details }, { status: 400 });
+}
+
+function safeGenerationError(message = 'Generation failed. Please try again.') {
+  return NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status: 500 });
 }
 
 export async function POST(req: NextRequest) {
@@ -102,8 +106,71 @@ export async function POST(req: NextRequest) {
     }));
   }
 
-  const result = await runGeneration(tool, inputText);
-  return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: { output: result.outputText }, usage: { generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: profile?.access_status ?? 'free' } }));
+  try {
+    const result = await runGeneration(tool, inputText);
+    let candidateOutput: unknown = result.outputText;
+
+    if (typeof candidateOutput === 'string') {
+      try {
+        candidateOutput = JSON.parse(candidateOutput);
+      } catch {
+        // keep as string for diagnostics and validation failure
+      }
+    }
+
+    const validatedOutput = strategicMessagingOutputSchema.safeParse(candidateOutput);
+    const outputKeys = candidateOutput && typeof candidateOutput === 'object' ? Object.keys(candidateOutput as Record<string, unknown>) : [];
+
+    console.info('[api/generate] generation_result_shape', {
+      toolId: tool.toolId,
+      status: validatedOutput.success ? 'success' : 'validation_failed',
+      wrapperKeys: ['status', 'requestId', 'toolId', 'output', 'usage', 'paywall'],
+      hasResult: false,
+      hasOutput: true,
+      hasData: false,
+      hasStrategicRewrite: Boolean((candidateOutput as any)?.strategicRewrite),
+      hasIntentPreservationCheck: Boolean((candidateOutput as any)?.intentPreservationCheck),
+      outputKeys
+    });
+
+    if (!validatedOutput.success) {
+      return withCors(req, safeGenerationError('Generation succeeded but output format was invalid. Please try again.'));
+    }
+
+    let nextGenerationsUsed = profile?.generations_used ?? 0;
+    if (access.consumesFreeGeneration && session?.userId) {
+      nextGenerationsUsed += 1;
+      await getSupabaseAdmin()
+        .from('profiles')
+        .update({ generations_used: nextGenerationsUsed })
+        .eq('id', session.userId);
+    }
+
+    return withCors(req, successResponse({
+      requestId: crypto.randomUUID(),
+      toolId: tool.toolId,
+      data: validatedOutput.data,
+      usage: {
+        generationsUsed: nextGenerationsUsed,
+        freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
+        remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed),
+        accessStatus: profile?.access_status ?? 'free'
+      }
+    }));
+  } catch {
+    console.info('[api/generate] generation_result_shape', {
+      toolId: tool.toolId,
+      status: 'failed',
+      wrapperKeys: [],
+      hasResult: false,
+      hasOutput: false,
+      hasData: false,
+      hasStrategicRewrite: false,
+      hasIntentPreservationCheck: false,
+      outputKeys: []
+    });
+    return withCors(req, safeGenerationError());
+  }
 }
 
 export async function OPTIONS(req: NextRequest) {
