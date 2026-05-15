@@ -9,5 +9,5 @@ export function blockedResponse(reason: 'auth_required'|'email_unverified'|'free
 }
 
 export function successResponse(params: { requestId: string; toolId: string; data: unknown; usage: { generationsUsed: number; freeGenerationsLimit: number; remainingFreeGenerations: number; accessStatus: AccessStatus } }) {
-  return NextResponse.json({ status: 'success', ...params });
+  return NextResponse.json({ status: 'success', requestId: params.requestId, toolId: params.toolId, output: params.data, usage: params.usage, paywall: { show: false, variant: null, ctaLabel: null } });
 }
