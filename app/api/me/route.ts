@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { FREE_GENERATIONS_LIMIT } from '@/lib/responses/api-responses';
+import { FREE_GENERATIONS_LIMIT, allowedPaywallState, authPaywallState } from '@/lib/responses/api-responses';
 import { preflightResponse, withCors } from '@/lib/security/cors';
 import { getBackendSession } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
@@ -56,12 +56,7 @@ export async function GET(req: NextRequest) {
       billingInterval: 'unknown',
       currentPeriodEnd: null
     },
-    paywall: {
-      show: !emailVerified,
-      variant: emailVerified ? 'none' : 'auth',
-      ctaLabel: 'Verify email to continue',
-      ctaUrl: `${origin}/api/auth/start`
-    },
+    paywall: emailVerified ? allowedPaywallState() : authPaywallState(origin),
     auth: {
       startEndpoint: `${origin}/api/auth/start`,
       verifyEndpoint: `${origin}/api/auth/verify`,
