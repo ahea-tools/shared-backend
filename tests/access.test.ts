@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { evaluateGenerationAccess } from '@/lib/usage/access';
-import { blockedResponse, successResponse } from '@/lib/responses/api-responses';
+import { allowedPaywallState, authPaywallState, blockedResponse, successResponse } from '@/lib/responses/api-responses';
 import { isEntitlementActivePaid } from '@/lib/membership/entitlements';
 import { parseSquarespaceEvent } from '@/lib/squarespace/parse-event';
 
@@ -78,6 +78,46 @@ describe('squarespace webhook parser', () => {
 });
 
 describe('response shapes', () => {
+
+  it('unauthenticated /api/me paywall state remains auth', () => {
+    const paywall = authPaywallState('https://backend.example');
+    expect(paywall).toMatchObject({
+      show: true,
+      variant: 'auth',
+      ctaLabel: 'Verify email to continue'
+    });
+    expect(paywall.message).toContain('Please sign in or verify your email');
+  });
+
+  it('verified user with remaining free generations has no paywall CTA', () => {
+    expect(allowedPaywallState()).toEqual({
+      show: false,
+      variant: 'none',
+      ctaLabel: null,
+      ctaUrl: null,
+      message: null
+    });
+  });
+
+  it('free trial exhaustion returns membership paywall state', async () => {
+    const body = await blockedResponse('free_limit_reached', 'ignored').json();
+    expect(body).toMatchObject({
+      status: 'blocked',
+      reason: 'free_trial_used',
+      paywall: {
+        show: true,
+        variant: 'membership',
+        ctaLabel: 'View membership options'
+      }
+    });
+    expect(body.message).toContain('two complimentary AHEA tool generations');
+  });
+
+  it('blocked free trial request does not consume usage', async () => {
+    const usage = { generationsUsed: 2, freeGenerationsLimit: 2, remainingFreeGenerations: 0, accessStatus: 'free' as const };
+    const body = await blockedResponse('free_limit_reached', 'ignored', usage).json();
+    expect(body.usage).toEqual(usage);
+  });
   it('standardized blocked response shape', async () => {
     const body = await blockedResponse('free_limit_reached', 'Reached').json();
     expect(body).toHaveProperty('status', 'blocked');
