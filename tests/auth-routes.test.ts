@@ -23,7 +23,7 @@ vi.mock('@/lib/supabase/server', () => ({
   }),
   detectConfiguredSupabaseRole: h.detectRoleMock
 }));
-vi.mock('@/lib/auth/session', () => ({ setBackendSessionOnResponse: h.setBackendSessionOnResponseMock }));
+vi.mock('@/lib/auth/session', () => ({ BACKEND_SESSION_COOKIE_NAME: 'ahea_session', setBackendSessionOnResponse: h.setBackendSessionOnResponseMock }));
 
 import { POST as startPOST } from '@/app/api/auth/start/route';
 import { GET as callbackGET } from '@/app/api/auth/callback/route';
@@ -90,6 +90,9 @@ describe('auth start + callback', () => {
 
     expect(res.status).toBe(307);
     expect(h.verifyOtpMock).toHaveBeenCalledWith({ token_hash: 'abc', type: 'signup' });
+
+    expect(h.setBackendSessionOnResponseMock).toHaveBeenCalledWith(expect.anything(), 'u1', 'u@example.com');
+
   });
 
   it('callback accepts valid state + token_hash + type=magiclink', async () => {

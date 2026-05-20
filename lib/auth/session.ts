@@ -5,6 +5,7 @@ import { signSessionValue, verifySessionValue } from '@/lib/auth/cookies';
 
 const SESSION_COOKIE = 'ahea_session';
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+export const BACKEND_SESSION_COOKIE_NAME = SESSION_COOKIE;
 
 function getSessionCookieOptions(maxAge: number) {
   return {
@@ -38,14 +39,19 @@ export async function clearBackendSession() {
 }
 
 export async function getBackendSession() {
+  const parsed = await getBackendSessionDetails();
+  return parsed.session;
+}
+
+export async function getBackendSessionDetails(): Promise<{ session: { userId: string; email: string; iat: number } | null; failureReason: 'missing_cookie' | 'bad_signature' | 'invalid_format' | null }> {
   const jar = await cookies();
   const raw = jar.get(SESSION_COOKIE)?.value;
-  if (!raw) return null;
+  if (!raw) return { session: null, failureReason: 'missing_cookie' };
   const verified = verifySessionValue(raw, getEnv().BACKEND_COOKIE_SECRET);
-  if (!verified) return null;
+  if (!verified) return { session: null, failureReason: 'bad_signature' };
   try {
-    return JSON.parse(Buffer.from(verified, 'base64url').toString('utf8')) as { userId: string; email: string; iat: number };
+    return { session: JSON.parse(Buffer.from(verified, 'base64url').toString('utf8')) as { userId: string; email: string; iat: number }, failureReason: null };
   } catch {
-    return null;
+    return { session: null, failureReason: 'invalid_format' };
   }
 }

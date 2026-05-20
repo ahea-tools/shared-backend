@@ -5,7 +5,7 @@ import { careerPositioningInputSchema, careerPositioningOutputSchema, generateSc
 import { getTool } from '@/lib/config/tools';
 import { runGeneration } from '@/lib/openai/generate';
 import { preflightResponse, withCors } from '@/lib/security/cors';
-import { getBackendSession } from '@/lib/auth/session';
+import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { evaluateGenerationAccess, type Profile } from '@/lib/usage/access';
@@ -41,7 +41,9 @@ function safeGenerationError(message = 'Generation failed. Please try again.') {
 
 export async function POST(req: NextRequest) {
   const contentType = req.headers.get('content-type') ?? '';
-  const session = await getBackendSession();
+  const sessionDetails = await getBackendSessionDetails();
+  const session = sessionDetails.session;
+  const hasSessionCookie = Boolean(req.cookies.get(BACKEND_SESSION_COOKIE_NAME)?.value);
   let parsedJson: unknown = null;
   let jsonOk = false;
 
@@ -61,7 +63,10 @@ export async function POST(req: NextRequest) {
   }
 
   const tool = getTool(parsed.data.toolId);
-  if (!tool) return withCors(req, blockedResponse('invalid_tool', 'The requested tool is not available.'));
+  if (!tool) {
+    console.info('[api/generate] forbidden', { failureReason: 'invalid_toolId', hasSessionCookie, sessionCookieValid: Boolean(session?.userId), toolId: parsed.data.toolId });
+    return withCors(req, blockedResponse('invalid_tool', 'The requested tool is not available.'));
+  }
 
   let inputText = '';
   let isCareerTool = parsed.data.toolId === 'career-positioning';
@@ -124,6 +129,18 @@ export async function POST(req: NextRequest) {
   const access = evaluateGenerationAccess(profile, rate.limited, null);
 
   if (!access.allowed && access.reason) {
+    const failureReasonMap: Record<string, string> = {
+      auth_required: session?.userId ? 'invalid_session' : 'missing_session',
+      email_unverified: 'unverified',
+      free_limit_reached: 'free_limit_used',
+      rate_limited: 'rate_limited'
+    };
+    console.info('[api/generate] forbidden', {
+      failureReason: failureReasonMap[access.reason] ?? 'invalid_session',
+      hasSessionCookie,
+      sessionCookieValid: Boolean(session?.userId),
+      toolId: tool.toolId
+    });
     return withCors(req, blockedResponse(access.reason, 'Generation is currently blocked.', {
       generationsUsed: profile?.generations_used ?? 0,
       freeGenerationsLimit: FREE_GENERATIONS_LIMIT,

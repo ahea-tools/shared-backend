@@ -1,23 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { FREE_GENERATIONS_LIMIT, allowedPaywallState, authPaywallState } from '@/lib/responses/api-responses';
-import { preflightResponse, withCors } from '@/lib/security/cors';
-import { getBackendSession } from '@/lib/auth/session';
+import { isAllowedOrigin, preflightResponse, withCors } from '@/lib/security/cors';
+import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 
 export async function GET(req: NextRequest) {
-  const session = await getBackendSession();
-  const hasSessionCookie = Boolean(req.headers.get('cookie')?.includes('ahea_session='));
+  const sessionDetails = await getBackendSessionDetails();
+  const session = sessionDetails.session;
+  const hasSessionCookie = Boolean(req.cookies.get(BACKEND_SESSION_COOKIE_NAME)?.value);
+  const requestOrigin = req.headers.get('origin');
+  const originAllowed = isAllowedOrigin(requestOrigin);
   const origin = req.nextUrl.origin;
-
-  console.info('[api/me] session check', {
-    hasSessionCookie,
-    sessionVerified: Boolean(session?.userId)
-  });
 
   let email: string | null = null;
   let emailVerified = false;
   let generationsUsed = 0;
   let accessStatus = 'free';
+
+  let failureReason: 'missing_cookie' | 'bad_signature' | 'expired' | 'user_not_found' | 'unverified' | null = null;
 
   if (session?.userId) {
     const { data: profile } = await getSupabaseAdmin()
@@ -31,14 +31,28 @@ export async function GET(req: NextRequest) {
       emailVerified = Boolean(profile.email_verified);
       generationsUsed = Number(profile.generations_used || 0);
       accessStatus = profile.access_status || 'free';
+      if (!emailVerified) failureReason = 'unverified';
     } else {
       console.info('[api/me] profile hydration skipped_or_missing', { hasSessionUserId: Boolean(session?.userId) });
+      failureReason = 'user_not_found';
     }
+  } else {
+    failureReason = sessionDetails.failureReason === 'invalid_format' ? 'bad_signature' : sessionDetails.failureReason;
   }
 
   const remainingFreeGenerations = Math.max(0, FREE_GENERATIONS_LIMIT - generationsUsed);
 
   const isAuthenticated = Boolean(session?.userId);
+
+  if (!isAuthenticated || !emailVerified) {
+    console.info('[api/me] unauthenticated', {
+      hasSessionCookie,
+      sessionCookieValid: Boolean(session?.userId),
+      failureReason: failureReason ?? 'missing_cookie',
+      requestOrigin,
+      originAllowed
+    });
+  }
 
   return withCors(req, NextResponse.json({
     status: 'success',

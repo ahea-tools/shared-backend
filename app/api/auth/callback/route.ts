@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { detectConfiguredSupabaseRole, getSupabaseAdmin } from '@/lib/supabase/server';
-import { setBackendSessionOnResponse } from '@/lib/auth/session';
+import { BACKEND_SESSION_COOKIE_NAME, setBackendSessionOnResponse } from '@/lib/auth/session';
 import { getToolReturnUrl } from '@/lib/config/tools';
 import { parseAuthState } from '@/lib/auth/state';
 
@@ -106,9 +106,16 @@ export async function GET(req: NextRequest) {
     .from('profiles')
     .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true, updated_at: new Date().toISOString() }, { onConflict: 'id', ignoreDuplicates: false });
 
-  logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode });
-
   const response = NextResponse.redirect(returnUrl);
   setBackendSessionOnResponse(response, verifiedUserId!, verifiedEmail!);
+  console.info('[auth/callback] success', {
+    callbackSuccess: true,
+    sessionCookieSet: response.cookies.has(BACKEND_SESSION_COOKIE_NAME),
+    cookieName: BACKEND_SESSION_COOKIE_NAME,
+    resolvedToolId: state.toolId,
+    redirectTargetOrigin: new URL(returnUrl).origin,
+    userIdPresent: Boolean(verifiedUserId),
+    verifiedEmailPresent: Boolean(verifiedEmail)
+  });
   return response;
 }
