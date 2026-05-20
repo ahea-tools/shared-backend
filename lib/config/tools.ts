@@ -7,6 +7,7 @@ export type ToolConfig = {
   temperature: number;
   systemPrompt: string;
   allowedOrigins?: string[];
+  returnUrl?: string;
 };
 
 export const toolRegistry: Record<string, ToolConfig> = {
@@ -18,6 +19,7 @@ export const toolRegistry: Record<string, ToolConfig> = {
     model: 'gpt-4.1-mini',
     maxOutputTokens: 1000,
     temperature: 0.35,
+    returnUrl: process.env.CAREER_POSITIONING_URL || 'https://career-positioning.americanhealthequity.org',
     systemPrompt: `You are generating career positioning support for a member of the American Health Equity Association. The user may work in public health, health equity, healthcare, research, policy, community engagement, communications, philanthropy, nonprofit leadership, government, health systems, or adjacent fields.
 
 Your job is to help the user translate their experience into clear, credible, adaptable career language. Focus on professional value, transferable skills, role alignment, career direction, and spoken positioning.
@@ -46,3 +48,8 @@ Return only valid structured JSON matching the requested schema.`
   'funding-narrative': { toolId: 'funding-narrative', displayName: 'Funding Narrative', maxInputChars: 12000, model: 'gpt-4.1-mini', maxOutputTokens: 1000, temperature: 0.3, systemPrompt: 'You are an AHEA assistant for funding narratives.' }
 };
 export const getTool = (toolId: string) => toolRegistry[toolId];
+
+export function getToolReturnUrl(toolId: string) {
+  const tool = getTool(toolId);
+  return tool?.returnUrl ?? null;
+}
