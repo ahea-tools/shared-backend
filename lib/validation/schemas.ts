@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+export const authStartSchema = z.object({ email: z.string().email(), toolId: z.string().min(1) });
 export const emailSchema = z.object({ email: z.string().email() });
 export const verifySchema = z.object({ token: z.string().min(1), type: z.enum(['magiclink', 'otp']).default('otp') });
 

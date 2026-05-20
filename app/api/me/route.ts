@@ -38,8 +38,14 @@ export async function GET(req: NextRequest) {
 
   const remainingFreeGenerations = Math.max(0, FREE_GENERATIONS_LIMIT - generationsUsed);
 
+  const isAuthenticated = Boolean(session?.userId);
+
   return withCors(req, NextResponse.json({
     status: 'success',
+    authenticated: isAuthenticated,
+    isAuthenticated,
+    verified: emailVerified,
+    isVerified: emailVerified,
     user: {
       email,
       emailVerified
