@@ -1,17 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const { runGenerationMock, checkRateLimitMock, getBackendSessionMock, maybeSingleMock, updateEqMock } = vi.hoisted(() => ({
+const { runGenerationMock, checkRateLimitMock, getBackendSessionMock, getBackendSessionDetailsMock, maybeSingleMock, updateEqMock } = vi.hoisted(() => ({
   runGenerationMock: vi.fn(),
   checkRateLimitMock: vi.fn(),
   getBackendSessionMock: vi.fn(),
+  getBackendSessionDetailsMock: vi.fn(),
   maybeSingleMock: vi.fn(),
   updateEqMock: vi.fn()
 }));
 
 vi.mock('@/lib/openai/generate', () => ({ runGeneration: runGenerationMock }));
 vi.mock('@/lib/rate-limit', () => ({ checkRateLimit: checkRateLimitMock }));
-vi.mock('@/lib/auth/session', () => ({ getBackendSession: getBackendSessionMock }));
+vi.mock('@/lib/auth/session', () => ({ BACKEND_SESSION_COOKIE_NAME: 'ahea_session', getBackendSession: getBackendSessionMock, getBackendSessionDetails: getBackendSessionDetailsMock }));
 vi.mock('@/lib/supabase/server', () => ({
   getSupabaseAdmin: () => ({
     from: () => ({
@@ -35,6 +36,7 @@ const validInput = {
 beforeEach(() => {
   vi.clearAllMocks();
   getBackendSessionMock.mockResolvedValue({ userId: 'u1', email: 'u@example.com' });
+  getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null });
   maybeSingleMock.mockResolvedValue({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 0 } });
   checkRateLimitMock.mockResolvedValue({ limited: false });
   runGenerationMock.mockResolvedValue({ outputText: JSON.stringify({
