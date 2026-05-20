@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { blockedResponse, FREE_GENERATIONS_LIMIT, successResponse } from '@/lib/responses/api-responses';
-import { generateSchema, strategicMessagingInputSchema, strategicMessagingOutputSchema } from '@/lib/validation/schemas';
+import { careerPositioningInputSchema, careerPositioningOutputSchema, generateSchema, strategicMessagingInputSchema, strategicMessagingOutputSchema } from '@/lib/validation/schemas';
 import { getTool } from '@/lib/config/tools';
 import { runGeneration } from '@/lib/openai/generate';
 import { preflightResponse, withCors } from '@/lib/security/cors';
@@ -63,28 +63,54 @@ export async function POST(req: NextRequest) {
   const tool = getTool(parsed.data.toolId);
   if (!tool) return withCors(req, blockedResponse('invalid_tool', 'The requested tool is not available.'));
 
-  if (parsed.data.toolId !== 'strategic-messaging') {
-    return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'toolId', message: 'Only strategic-messaging is supported by this endpoint version.' }]));
+  let inputText = '';
+  let isCareerTool = parsed.data.toolId === 'career-positioning';
+
+  if (isCareerTool) {
+    const inputValidation = careerPositioningInputSchema.safeParse(parsed.data.input);
+    if (!inputValidation.success) {
+      const details = toIssueDetails(inputValidation.error.issues);
+      console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: parsed.data.toolId, hasInput: Boolean((parsed.data as any).input), inputKeys: Object.keys(((parsed.data as any).input && typeof (parsed.data as any).input === 'object') ? (parsed.data as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
+      return withCors(req, invalidRequest('Invalid generation request.', details));
+    }
+
+    inputText = [
+      'Generation rules:',
+      '1. Do not invent facts, credentials, job titles, outcomes, metrics, or claims not provided by the user.',
+      '2. Preserve user intent and substance while strengthening clarity and transferability.',
+      '3. Avoid generic resume cliches and empty language.',
+      '4. Keep output focused on career positioning and professional value, not strategic messaging.',
+      '5. Do not use the phrase politically sensitive in user-facing output.',
+      '6. Keep tone supportive, practical, and immediately usable.',
+      '7. Do not promise interviews, jobs, promotions, contracts, or funding outcomes.',
+      `outputType: ${inputValidation.data.outputType}`,
+      `professionalContext: ${inputValidation.data.professionalContext}`,
+      `currentWork: ${inputValidation.data.currentWork}`,
+      `desiredDirection: ${inputValidation.data.desiredDirection}`,
+      `emphasis: ${inputValidation.data.emphasis.join(', ')}`,
+      `currentLanguage: ${inputValidation.data.currentLanguage}`,
+      inputValidation.data.additionalContext ? `additionalContext: ${inputValidation.data.additionalContext}` : null
+    ].filter(Boolean).join('\n');
+  } else {
+    const inputValidation = strategicMessagingInputSchema.safeParse(parsed.data.input);
+    if (!inputValidation.success) {
+      const details = toIssueDetails(inputValidation.error.issues);
+      console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: parsed.data.toolId, hasInput: Boolean((parsed.data as any).input), inputKeys: Object.keys(((parsed.data as any).input && typeof (parsed.data as any).input === 'object') ? (parsed.data as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
+      return withCors(req, invalidRequest('Invalid generation request.', details));
+    }
+
+    const normalizedAudience = STRATEGIC_AUDIENCE_MAP[inputValidation.data.audience.toLowerCase()] ?? inputValidation.data.audience;
+    const normalizedMode = STRATEGIC_MODE_MAP[inputValidation.data.mode.toLowerCase()] ?? inputValidation.data.mode;
+
+    inputText = [
+      `Message: ${inputValidation.data.message}`,
+      `Audience: ${normalizedAudience}`,
+      `Mode: ${normalizedMode}`,
+      inputValidation.data.goalContext ? `Goal context: ${inputValidation.data.goalContext}` : null,
+      inputValidation.data.followUpAction ? `Follow-up action: ${inputValidation.data.followUpAction}` : null,
+      inputValidation.data.currentOutput ? `Current output: ${JSON.stringify(inputValidation.data.currentOutput)}` : null
+    ].filter(Boolean).join('\n');
   }
-
-  const inputValidation = strategicMessagingInputSchema.safeParse(parsed.data.input);
-  if (!inputValidation.success) {
-    const details = toIssueDetails(inputValidation.error.issues);
-    console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: parsed.data.toolId, hasInput: Boolean((parsed.data as any).input), inputKeys: Object.keys(((parsed.data as any).input && typeof (parsed.data as any).input === 'object') ? (parsed.data as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
-    return withCors(req, invalidRequest('Invalid generation request.', details));
-  }
-
-  const normalizedAudience = STRATEGIC_AUDIENCE_MAP[inputValidation.data.audience.toLowerCase()] ?? inputValidation.data.audience;
-  const normalizedMode = STRATEGIC_MODE_MAP[inputValidation.data.mode.toLowerCase()] ?? inputValidation.data.mode;
-
-  const inputText = [
-    `Message: ${inputValidation.data.message}`,
-    `Audience: ${normalizedAudience}`,
-    `Mode: ${normalizedMode}`,
-    inputValidation.data.goalContext ? `Goal context: ${inputValidation.data.goalContext}` : null,
-    inputValidation.data.followUpAction ? `Follow-up action: ${inputValidation.data.followUpAction}` : null,
-    inputValidation.data.currentOutput ? `Current output: ${JSON.stringify(inputValidation.data.currentOutput)}` : null
-  ].filter(Boolean).join('\n');
 
   if (inputText.length > tool.maxInputChars) return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'input', message: 'Input exceeds allowed length for this tool.' }]));
 
@@ -118,7 +144,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const validatedOutput = strategicMessagingOutputSchema.safeParse(candidateOutput);
+    const validatedOutput = isCareerTool
+      ? careerPositioningOutputSchema.safeParse(candidateOutput)
+      : strategicMessagingOutputSchema.safeParse(candidateOutput);
     const outputKeys = candidateOutput && typeof candidateOutput === 'object' ? Object.keys(candidateOutput as Record<string, unknown>) : [];
 
     console.info('[api/generate] generation_result_shape', {
