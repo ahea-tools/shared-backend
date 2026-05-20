@@ -69,24 +69,70 @@ describe('auth start + callback', () => {
     expect(h.signInWithOtpMock).toHaveBeenCalledTimes(1);
   });
 
-  it('callback rejects missing token/code', async () => {
-    const res = await callbackGET(new NextRequest('https://api.americanhealthequity.org/api/auth/callback'));
+  it('callback rejects missing state', async () => {
+    const res = await callbackGET(new NextRequest('https://api.americanhealthequity.org/api/auth/callback?token_hash=abc&type=signup'));
     expect(res.status).toBe(400);
   });
 
   it('callback rejects tampered state', async () => {
-    const res = await callbackGET(new NextRequest('https://api.americanhealthequity.org/api/auth/callback?state=bad&token_hash=abc&type=email'));
+    const res = await callbackGET(new NextRequest('https://api.americanhealthequity.org/api/auth/callback?state=bad&token_hash=abc&type=signup'));
     expect(res.status).toBe(400);
   });
 
-  it('callback redirects to approved career URL on success', async () => {
-    const startRes = await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
+  it('callback accepts valid state + token_hash + type=signup', async () => {
+    await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
+    const redirect = h.signInWithOtpMock.mock.calls[0][0].options.emailRedirectTo as string;
+    const state = new URL(redirect).searchParams.get('state');
+
+    h.verifyOtpMock.mockResolvedValue({ data: { user: { id: 'u1', email: 'u@example.com' } }, error: null });
+
+    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}&token_hash=abc&type=signup`));
+
+    expect(res.status).toBe(307);
+    expect(h.verifyOtpMock).toHaveBeenCalledWith({ token_hash: 'abc', type: 'signup' });
+  });
+
+  it('callback accepts valid state + token_hash + type=magiclink', async () => {
+    await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
+    const redirect = h.signInWithOtpMock.mock.calls[0][0].options.emailRedirectTo as string;
+    const state = new URL(redirect).searchParams.get('state');
+
+    h.verifyOtpMock.mockResolvedValue({ data: { user: { id: 'u1', email: 'u@example.com' } }, error: null });
+
+    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}&token_hash=abc&type=magiclink`));
+
+    expect(res.status).toBe(307);
+    expect(h.verifyOtpMock).toHaveBeenCalledWith({ token_hash: 'abc', type: 'magiclink' });
+  });
+
+  it('callback rejects unsupported type', async () => {
+    await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
+    const redirect = h.signInWithOtpMock.mock.calls[0][0].options.emailRedirectTo as string;
+    const state = new URL(redirect).searchParams.get('state');
+
+    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}&token_hash=abc&type=hacked`));
+
+    expect(res.status).toBe(400);
+    expect(h.verifyOtpMock).not.toHaveBeenCalled();
+  });
+
+  it('callback rejects state-only because it cannot verify identity', async () => {
+    await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
+    const redirect = h.signInWithOtpMock.mock.calls[0][0].options.emailRedirectTo as string;
+    const state = new URL(redirect).searchParams.get('state');
+
+    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}`));
+
+    expect(res.status).toBe(400);
+  });
+
+  it('successful callback redirects to approved career URL and never uses arbitrary redirect URL', async () => {
+    await startPOST(postReq({ email: 'u@example.com', toolId: 'career-positioning' }));
     const redirect = h.signInWithOtpMock.mock.calls[0][0].options.emailRedirectTo as string;
     const state = new URL(redirect).searchParams.get('state');
     h.verifyOtpMock.mockResolvedValue({ data: { user: { id: 'u1', email: 'u@example.com' } }, error: null });
 
-    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}&token_hash=abc&type=email`));
-    expect(startRes.status).toBe(200);
+    const res = await callbackGET(new NextRequest(`https://api.americanhealthequity.org/api/auth/callback?state=${encodeURIComponent(state!)}&token_hash=abc&type=signup&redirect_to=https://evil.example.com`));
     expect(res.status).toBe(307);
     expect(res.headers.get('location')).toBe('https://career-positioning.americanhealthequity.org/');
   });
