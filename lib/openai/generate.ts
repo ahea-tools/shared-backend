@@ -52,6 +52,44 @@ const careerSchema = {
   required: ['careerPositioningSummary', 'transferableValueMap', 'experienceReframe', 'roleAndOpportunityFit', 'talkingPoints', 'suggestedNextStep']
 };
 
+function extractGenerationOutput(response: any) {
+  const outputArray = Array.isArray(response?.output) ? response.output : [];
+  const contentItems = outputArray.flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []));
+  const parsedContent = contentItems.find((content: any) => content && typeof content.parsed === 'object' && content.parsed !== null);
+  const textContent = contentItems.find((content: any) => typeof content?.text === 'string');
+
+  const diagnostics = {
+    hasOutputText: typeof response?.outputText === 'string',
+    hasOutputUnderscoreText: typeof response?.output_text === 'string',
+    outputArrayLength: outputArray.length,
+    contentTypes: [...new Set(contentItems.map((content: any) => content?.type).filter((type: unknown) => typeof type === 'string'))],
+    hasParsedContent: Boolean(parsedContent),
+    extractionMethod: 'none'
+  };
+
+  if (typeof response?.outputText === 'string') {
+    diagnostics.extractionMethod = 'outputText';
+    return { outputText: response.outputText, diagnostics };
+  }
+
+  if (typeof response?.output_text === 'string') {
+    diagnostics.extractionMethod = 'output_text';
+    return { outputText: response.output_text, diagnostics };
+  }
+
+  if (parsedContent) {
+    diagnostics.extractionMethod = 'content.parsed';
+    return { outputText: JSON.stringify(parsedContent.parsed), diagnostics };
+  }
+
+  if (textContent) {
+    diagnostics.extractionMethod = 'content.text';
+    return { outputText: textContent.text, diagnostics };
+  }
+
+  return { outputText: null, diagnostics };
+}
+
 export async function runGeneration(tool: ToolConfig, input: string) {
   const isCareer = tool.toolId === 'career-positioning';
   const response = await openaiClient.responses.create({
@@ -71,5 +109,8 @@ export async function runGeneration(tool: ToolConfig, input: string) {
       }
     }
   });
-  return { outputText: response.output_text, responseId: response.id };
+
+  const extracted = extractGenerationOutput(response);
+  console.info('[openai/generate] response_extraction', extracted.diagnostics);
+  return { outputText: extracted.outputText, responseId: response.id };
 }
