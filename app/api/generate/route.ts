@@ -35,8 +35,13 @@ function invalidRequest(message: string, details: Array<{ path: string; message:
   return NextResponse.json({ status: 'error', reason: 'invalid_request', message, details }, { status: 400 });
 }
 
-function safeGenerationError(message = 'Generation failed. Please try again.') {
-  return NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status: 500 });
+function safeGenerationError(message = 'Generation failed. Please try again.', status = 500) {
+  return NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status });
+}
+
+function sanitizeError(error: unknown) {
+  if (error instanceof Error) return { name: error.name, message: error.message };
+  return { name: 'UnknownError', message: 'Unknown error' };
 }
 
 export async function POST(req: NextRequest) {
@@ -47,18 +52,41 @@ export async function POST(req: NextRequest) {
   let parsedJson: unknown = null;
   let jsonOk = false;
 
+  const diagnostics = {
+    routeVersion: 'generate-career-positioning-debug-v1',
+    toolId: null as string | null,
+    requestParsed: false,
+    inputValidationPassed: false,
+    sessionPresent: Boolean(hasSessionCookie),
+    sessionValid: Boolean(session?.userId),
+    accessDecision: 'error' as 'allowed' | 'blocked' | 'error',
+    openaiCallStarted: false,
+    openaiCallSucceeded: false,
+    structuredOutputValidationPassed: false,
+    successWrapperKey: 'output',
+    failureStep: null as string | null,
+    sanitizedErrorName: null as string | null,
+    sanitizedErrorMessage: null as string | null
+  };
+
   try {
     parsedJson = await req.json();
     jsonOk = true;
+    diagnostics.requestParsed = true;
   } catch {
+    diagnostics.failureStep = 'request_parse_failed';
+    console.info('[api/generate] career_positioning_diagnostics', diagnostics);
     console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: false, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
     return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'body', message: 'Request body must be valid JSON.' }]));
   }
 
   const parsed = generateSchema.safeParse(parsedJson);
+  diagnostics.toolId = typeof (parsedJson as any)?.toolId === 'string' ? (parsedJson as any).toolId : null;
   if (!parsed.success) {
+    diagnostics.failureStep = 'input_validation_failed';
     const details = toIssueDetails(parsed.error.issues);
-    console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: typeof (parsedJson as any)?.toolId === 'string' ? (parsedJson as any).toolId : null, hasInput: Boolean((parsedJson as any)?.input), inputKeys: Object.keys(((parsedJson as any)?.input && typeof (parsedJson as any).input === 'object') ? (parsedJson as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
+    if (diagnostics.toolId === 'career-positioning') console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+    console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: diagnostics.toolId, hasInput: Boolean((parsedJson as any)?.input), inputKeys: Object.keys(((parsedJson as any)?.input && typeof (parsedJson as any).input === 'object') ? (parsedJson as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
     return withCors(req, invalidRequest('Invalid generation request.', details));
   }
 
@@ -69,16 +97,17 @@ export async function POST(req: NextRequest) {
   }
 
   let inputText = '';
-  let isCareerTool = parsed.data.toolId === 'career-positioning';
+  const isCareerTool = parsed.data.toolId === 'career-positioning';
 
   if (isCareerTool) {
     const inputValidation = careerPositioningInputSchema.safeParse(parsed.data.input);
     if (!inputValidation.success) {
+      diagnostics.failureStep = 'input_validation_failed';
       const details = toIssueDetails(inputValidation.error.issues);
-      console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: parsed.data.toolId, hasInput: Boolean((parsed.data as any).input), inputKeys: Object.keys(((parsed.data as any).input && typeof (parsed.data as any).input === 'object') ? (parsed.data as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
       return withCors(req, invalidRequest('Invalid generation request.', details));
     }
-
+    diagnostics.inputValidationPassed = true;
     inputText = [
       'Generation rules:',
       '1. Do not invent facts, credentials, job titles, outcomes, metrics, or claims not provided by the user.',
@@ -100,7 +129,6 @@ export async function POST(req: NextRequest) {
     const inputValidation = strategicMessagingInputSchema.safeParse(parsed.data.input);
     if (!inputValidation.success) {
       const details = toIssueDetails(inputValidation.error.issues);
-      console.info('[api/generate] invalid_request', { route: '/api/generate', status: 'invalid_request', contentType, jsonParseSucceeded: jsonOk, toolId: parsed.data.toolId, hasInput: Boolean((parsed.data as any).input), inputKeys: Object.keys(((parsed.data as any).input && typeof (parsed.data as any).input === 'object') ? (parsed.data as any).input : {}), validationIssues: details, hasUser: Boolean(session?.userId), hasEmail: Boolean(session?.email), emailVerified: false });
       return withCors(req, invalidRequest('Invalid generation request.', details));
     }
 
@@ -119,7 +147,6 @@ export async function POST(req: NextRequest) {
 
   if (inputText.length > tool.maxInputChars) return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'input', message: 'Input exceeds allowed length for this tool.' }]));
 
-  const email = session?.email?.toLowerCase();
   const profileRes = session?.userId
     ? await getSupabaseAdmin().from('profiles').select('id,email,email_verified,access_status,access_expires_at,generations_used').eq('id', session.userId).maybeSingle()
     : { data: null };
@@ -129,18 +156,11 @@ export async function POST(req: NextRequest) {
   const access = evaluateGenerationAccess(profile, rate.limited, null);
 
   if (!access.allowed && access.reason) {
-    const failureReasonMap: Record<string, string> = {
-      auth_required: session?.userId ? 'invalid_session' : 'missing_session',
-      email_unverified: 'unverified',
-      free_limit_reached: 'free_limit_used',
-      rate_limited: 'rate_limited'
-    };
-    console.info('[api/generate] forbidden', {
-      failureReason: failureReasonMap[access.reason] ?? 'invalid_session',
-      hasSessionCookie,
-      sessionCookieValid: Boolean(session?.userId),
-      toolId: tool.toolId
-    });
+    if (isCareerTool) {
+      diagnostics.accessDecision = 'blocked';
+      diagnostics.failureStep = access.reason === 'rate_limited' ? 'rate_limit_failed' : 'missing_or_invalid_session';
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+    }
     return withCors(req, blockedResponse(access.reason, 'Generation is currently blocked.', {
       generationsUsed: profile?.generations_used ?? 0,
       freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
@@ -148,49 +168,58 @@ export async function POST(req: NextRequest) {
       accessStatus: profile?.access_status ?? 'free'
     }));
   }
+  if (isCareerTool) diagnostics.accessDecision = 'allowed';
 
   try {
+    if (isCareerTool) diagnostics.openaiCallStarted = true;
     const result = await runGeneration(tool, inputText);
+    if (isCareerTool) diagnostics.openaiCallSucceeded = true;
     let candidateOutput: unknown = result.outputText;
 
     if (typeof candidateOutput === 'string') {
       try {
         candidateOutput = JSON.parse(candidateOutput);
       } catch {
-        // keep as string for diagnostics and validation failure
+        if (isCareerTool) {
+          diagnostics.failureStep = 'openai_response_parse_failed';
+          console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+          return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+        }
       }
     }
 
     const validatedOutput = isCareerTool
       ? careerPositioningOutputSchema.safeParse(candidateOutput)
       : strategicMessagingOutputSchema.safeParse(candidateOutput);
-    const outputKeys = candidateOutput && typeof candidateOutput === 'object' ? Object.keys(candidateOutput as Record<string, unknown>) : [];
-
-    console.info('[api/generate] generation_result_shape', {
-      toolId: tool.toolId,
-      status: validatedOutput.success ? 'success' : 'validation_failed',
-      wrapperKeys: ['status', 'requestId', 'toolId', 'output', 'usage', 'paywall'],
-      hasResult: false,
-      hasOutput: true,
-      hasData: false,
-      hasStrategicRewrite: Boolean((candidateOutput as any)?.strategicRewrite),
-      hasIntentPreservationCheck: Boolean((candidateOutput as any)?.intentPreservationCheck),
-      outputKeys
-    });
 
     if (!validatedOutput.success) {
-      return withCors(req, safeGenerationError('Generation succeeded but output format was invalid. Please try again.'));
+      if (isCareerTool) {
+        diagnostics.failureStep = 'structured_output_validation_failed';
+        console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      }
+      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
     }
+    if (isCareerTool) diagnostics.structuredOutputValidationPassed = true;
 
     let nextGenerationsUsed = profile?.generations_used ?? 0;
     if (access.consumesFreeGeneration && session?.userId) {
       nextGenerationsUsed += 1;
-      await getSupabaseAdmin()
+      const updateRes = await getSupabaseAdmin()
         .from('profiles')
         .update({ generations_used: nextGenerationsUsed })
         .eq('id', session.userId);
+      if ((updateRes as any)?.error) {
+        if (isCareerTool) {
+          diagnostics.failureStep = 'usage_logging_failed';
+          diagnostics.sanitizedErrorName = 'SupabaseUpdateError';
+          diagnostics.sanitizedErrorMessage = 'Failed to persist generations_used.';
+          console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+        }
+        return withCors(req, safeGenerationError('Generation failed. Please try again.', 500));
+      }
     }
 
+    if (isCareerTool) console.info('[api/generate] career_positioning_diagnostics', diagnostics);
     return withCors(req, successResponse({
       requestId: crypto.randomUUID(),
       toolId: tool.toolId,
@@ -202,18 +231,14 @@ export async function POST(req: NextRequest) {
         accessStatus: profile?.access_status ?? 'free'
       }
     }));
-  } catch {
-    console.info('[api/generate] generation_result_shape', {
-      toolId: tool.toolId,
-      status: 'failed',
-      wrapperKeys: [],
-      hasResult: false,
-      hasOutput: false,
-      hasData: false,
-      hasStrategicRewrite: false,
-      hasIntentPreservationCheck: false,
-      outputKeys: []
-    });
+  } catch (error) {
+    if (isCareerTool) {
+      const safe = sanitizeError(error);
+      diagnostics.failureStep = diagnostics.openaiCallStarted && !diagnostics.openaiCallSucceeded ? 'openai_request_failed' : 'unknown_unhandled_exception';
+      diagnostics.sanitizedErrorName = safe.name;
+      diagnostics.sanitizedErrorMessage = safe.message;
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+    }
     return withCors(req, safeGenerationError());
   }
 }

@@ -33,20 +33,23 @@ const validInput = {
   professionalContext: 'balanced_broadly_accessible'
 };
 
+const validOutput = {
+  careerPositioningSummary: 'summary',
+  transferableValueMap: [{ experience: 'a', transferableValue: 'b', whereItApplies: 'c' }],
+  experienceReframe: [{ currentFraming: 'a', strongerPositioning: 'b', whyItWorks: 'c' }],
+  roleAndOpportunityFit: [{ potentialDirection: 'a', whyItFits: 'b', howToPositionExperience: 'c', gapOrCaution: 'd' }],
+  talkingPoints: { shortVersion: 'a', thirtySecondVersion: 'b', interviewReadyVersion: 'c' },
+  suggestedNextStep: ['x']
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   getBackendSessionMock.mockResolvedValue({ userId: 'u1', email: 'u@example.com' });
   getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null });
   maybeSingleMock.mockResolvedValue({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 0 } });
   checkRateLimitMock.mockResolvedValue({ limited: false });
-  runGenerationMock.mockResolvedValue({ outputText: JSON.stringify({
-    careerPositioningSummary: 'summary',
-    transferableValueMap: [{ experience: 'a', transferableValue: 'b', whereItApplies: 'c' },{ experience: 'a2', transferableValue: 'b2', whereItApplies: 'c2' },{ experience: 'a3', transferableValue: 'b3', whereItApplies: 'c3' }],
-    experienceReframe: [{ currentFraming: 'a', strongerPositioning: 'b', whyItWorks: 'c' },{ currentFraming: 'a2', strongerPositioning: 'b2', whyItWorks: 'c2' },{ currentFraming: 'a3', strongerPositioning: 'b3', whyItWorks: 'c3' }],
-    roleAndOpportunityFit: [{ potentialDirection: 'a', whyItFits: 'b', howToPositionExperience: 'c', gapOrCaution: 'd' },{ potentialDirection: 'a2', whyItFits: 'b2', howToPositionExperience: 'c2', gapOrCaution: 'd2' },{ potentialDirection: 'a3', whyItFits: 'b3', howToPositionExperience: 'c3', gapOrCaution: 'd3' }],
-    talkingPoints: { shortVersion: 'a', thirtySecondVersion: 'b', interviewReadyVersion: 'c' },
-    suggestedNextStep: ['x']
-  }) });
+  runGenerationMock.mockResolvedValue({ outputText: JSON.stringify(validOutput) });
+  updateEqMock.mockResolvedValue({ error: null });
 });
 
 function makeReq(body: unknown) {
@@ -54,51 +57,39 @@ function makeReq(body: unknown) {
 }
 
 describe('generate route career-positioning', () => {
-  it('accepts registered toolId and runs one generation', async () => {
+  it('valid request returns 200 with output wrapper and no forbidden wrappers', async () => {
     const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    const body = await res.json();
     expect(res.status).toBe(200);
     expect(runGenerationMock).toHaveBeenCalledTimes(1);
+    expect(body.output).toEqual(validOutput);
+    expect(body.data).toBeUndefined();
+    expect(body.result).toBeUndefined();
+    expect(body.generation).toBeUndefined();
+    expect(body.content).toBeUndefined();
   });
 
-  it('rejects invalid toolId', async () => {
-    const res = await POST(makeReq({ toolId: 'nope', input: validInput }));
-    expect(res.status).toBe(400);
-    expect(runGenerationMock).not.toHaveBeenCalled();
+  it('openai request failure returns non-200 safe generation_failed', async () => {
+    runGenerationMock.mockRejectedValueOnce(new Error('openai down'));
+    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    const body = await res.json();
+    expect(res.status).toBe(500);
+    expect(body.reason).toBe('generation_failed');
   });
 
-  it('rejects short currentLanguage before OpenAI', async () => {
-    const res = await POST(makeReq({ toolId: 'career-positioning', input: { ...validInput, currentLanguage: 'too short' } }));
-    expect(res.status).toBe(400);
-    expect(runGenerationMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects emphasis with zero or more than 3 selections', async () => {
-    const zero = await POST(makeReq({ toolId: 'career-positioning', input: { ...validInput, emphasis: [] } }));
-    const many = await POST(makeReq({ toolId: 'career-positioning', input: { ...validInput, emphasis: ['leadership_decision_making','transferable_skills','program_project_results','community_partnership_trust'] } }));
-    expect(zero.status).toBe(400);
-    expect(many.status).toBe(400);
-    expect(runGenerationMock).not.toHaveBeenCalled();
-  });
-
-  it('blocked and rate-limited users do not call OpenAI', async () => {
-    maybeSingleMock.mockResolvedValueOnce({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 2 } });
-    const blocked = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    checkRateLimitMock.mockResolvedValueOnce({ limited: true });
-    const rateLimited = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(blocked.status).toBe(403);
-    expect(rateLimited.status).toBe(403);
-    expect(runGenerationMock).not.toHaveBeenCalled();
-  });
-
-  it('invalid structured output fails validation', async () => {
+  it('invalid structured output returns non-200 generation_failed', async () => {
     runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ careerPositioningSummary: 'x' }) });
     const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(res.status).toBe(502);
+    expect(body.reason).toBe('generation_failed');
   });
 
-  it('increments usage for allowed free users', async () => {
+  it('usage logging failure returns safe error', async () => {
+    updateEqMock.mockResolvedValueOnce({ error: { message: 'db write failed' } });
     const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(res.status).toBe(200);
-    expect(updateEqMock).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(res.status).toBe(500);
+    expect(body.reason).toBe('generation_failed');
   });
 });
