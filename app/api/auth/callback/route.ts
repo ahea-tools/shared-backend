@@ -9,67 +9,56 @@ type SafeOtpType = (typeof SAFE_OTP_TYPES)[number];
 
 function asSafeOtpType(type: string | null): SafeOtpType | null {
   if (!type) return null;
-  if ((SAFE_OTP_TYPES as readonly string[]).includes(type)) {
-    return type as SafeOtpType;
-  }
-  return null;
-}
-
-function logAuthCallback(details: {
-  req: NextRequest;
-  hasState: boolean;
-  stateVerificationPassed: boolean;
-  hasToken: boolean;
-  hasTokenHash: boolean;
-  hasType: boolean;
-  safeType: SafeOtpType | null;
-  hasCode: boolean;
-  failureStep?: string;
-}) {
-  console.info('[auth/callback]', {
-    queryParamNames: [...details.req.nextUrl.searchParams.keys()],
-    hasState: details.hasState,
-    stateVerificationPassed: details.stateVerificationPassed,
-    hasToken: details.hasToken,
-    hasTokenHash: details.hasTokenHash,
-    hasType: details.hasType,
-    ...(details.safeType ? { type: details.safeType } : {}),
-    hasCode: details.hasCode,
-    ...(details.failureStep ? { failureStep: details.failureStep } : {})
-  });
+  return (SAFE_OTP_TYPES as readonly string[]).includes(type) ? (type as SafeOtpType) : null;
 }
 
 export async function GET(req: NextRequest) {
   const tokenHash = req.nextUrl.searchParams.get('token_hash');
-  const token = req.nextUrl.searchParams.get('token');
   const code = req.nextUrl.searchParams.get('code');
   const type = req.nextUrl.searchParams.get('type');
   const safeType = asSafeOtpType(type);
-
   const rawState = req.nextUrl.searchParams.get('state');
   const state = parseAuthState(rawState);
 
-  const hasState = Boolean(rawState);
-  const stateVerificationPassed = Boolean(state);
-  const hasToken = Boolean(token);
-  const hasTokenHash = Boolean(tokenHash);
-  const hasType = Boolean(type);
-  const hasCode = Boolean(code);
+  const diagnostics = {
+    routeVersion: 'auth-callback-debug-v4',
+    failureStep: null as string | null,
+    queryParamNames: [...req.nextUrl.searchParams.keys()],
+    hasState: Boolean(rawState),
+    stateVerificationPassed: Boolean(state),
+    stateFailureReason: !rawState ? 'missing_state' : state ? null : 'invalid_or_expired_state',
+    hasTokenHash: Boolean(tokenHash),
+    hasType: Boolean(type),
+    ...(safeType ? { safeType } : {}),
+    hasCode: Boolean(code),
+    verifyOtpAttempted: false,
+    verifyOtpSucceeded: false,
+    codeExchangeAttempted: false,
+    codeExchangeSucceeded: false,
+    sessionCookieSet: false,
+    resolvedToolId: state?.toolId ?? null,
+    redirectTargetOrigin: null as string | null
+  };
 
   if (!state) {
-    logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'invalid_state' });
+    diagnostics.failureStep = 'invalid_state';
+    console.info('[auth/callback] diagnostics', diagnostics);
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
   }
 
   const returnUrl = getToolReturnUrl(state.toolId);
   if (!returnUrl) {
-    logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'invalid_tool' });
+    diagnostics.failureStep = 'tool_redirect_resolution_failure';
+    console.info('[auth/callback] diagnostics', diagnostics);
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
   }
 
+  diagnostics.redirectTargetOrigin = new URL(returnUrl).origin;
+
   const supabaseAdmin = getSupabaseAdmin();
   if (detectConfiguredSupabaseRole() !== 'service_role') {
-    logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'server_misconfigured' });
+    diagnostics.failureStep = 'server_misconfigured';
+    console.info('[auth/callback] diagnostics', diagnostics);
     return NextResponse.json({ status: 'error', reason: 'server_misconfigured', message: 'Missing required auth configuration.' }, { status: 500 });
   }
 
@@ -78,27 +67,34 @@ export async function GET(req: NextRequest) {
 
   if (tokenHash) {
     if (!safeType) {
-      logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'unsupported_type' });
+      diagnostics.failureStep = 'unsupported_type';
+      console.info('[auth/callback] diagnostics', diagnostics);
       return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
     }
-
+    diagnostics.verifyOtpAttempted = true;
     const { data, error } = await supabaseAdmin.auth.verifyOtp({ token_hash: tokenHash, type: safeType });
     if (error || !data.user?.email) {
-      logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'verify_otp_failed' });
+      diagnostics.failureStep = 'verify_otp_failed';
+      console.info('[auth/callback] diagnostics', diagnostics);
       return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
     }
+    diagnostics.verifyOtpSucceeded = true;
     verifiedUserId = data.user.id;
     verifiedEmail = data.user.email;
   } else if (code) {
+    diagnostics.codeExchangeAttempted = true;
     const { data, error } = await supabaseAdmin.auth.exchangeCodeForSession(code);
     if (error || !data.user?.email) {
-      logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'exchange_code_failed' });
+      diagnostics.failureStep = 'code_exchange_failed';
+      console.info('[auth/callback] diagnostics', diagnostics);
       return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
     }
+    diagnostics.codeExchangeSucceeded = true;
     verifiedUserId = data.user.id;
     verifiedEmail = data.user.email;
   } else {
-    logAuthCallback({ req, hasState, stateVerificationPassed, hasToken, hasTokenHash, hasType, safeType, hasCode, failureStep: 'missing_verification_artifact' });
+    diagnostics.failureStep = 'missing_token_hash_or_code';
+    console.info('[auth/callback] diagnostics', diagnostics);
     return NextResponse.json({ status: 'blocked', reason: 'invalid_request', message: 'Verification failed.' }, { status: 400 });
   }
 
@@ -108,14 +104,7 @@ export async function GET(req: NextRequest) {
 
   const response = NextResponse.redirect(returnUrl);
   setBackendSessionOnResponse(response, verifiedUserId!, verifiedEmail!);
-  console.info('[auth/callback] success', {
-    callbackSuccess: true,
-    sessionCookieSet: response.cookies.has(BACKEND_SESSION_COOKIE_NAME),
-    cookieName: BACKEND_SESSION_COOKIE_NAME,
-    resolvedToolId: state.toolId,
-    redirectTargetOrigin: new URL(returnUrl).origin,
-    userIdPresent: Boolean(verifiedUserId),
-    verifiedEmailPresent: Boolean(verifiedEmail)
-  });
+  diagnostics.sessionCookieSet = response.cookies.has(BACKEND_SESSION_COOKIE_NAME);
+  console.info('[auth/callback] diagnostics', diagnostics);
   return response;
 }
