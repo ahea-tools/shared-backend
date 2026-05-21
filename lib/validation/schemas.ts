@@ -64,24 +64,24 @@ export const careerPositioningOutputSchema = z.object({
     experience: z.string().min(1),
     transferableValue: z.string().min(1),
     whereItApplies: z.string().min(1)
-  })).min(3).max(5),
+  })),
   experienceReframe: z.array(z.object({
     currentFraming: z.string().min(1),
     strongerPositioning: z.string().min(1),
     whyItWorks: z.string().min(1)
-  })).min(3).max(5),
+  })),
   roleAndOpportunityFit: z.array(z.object({
     potentialDirection: z.string().min(1),
     whyItFits: z.string().min(1),
     howToPositionExperience: z.string().min(1),
     gapOrCaution: z.string().min(1)
-  })).min(3).max(5),
+  })),
   talkingPoints: z.object({
     shortVersion: z.string().min(1),
     thirtySecondVersion: z.string().min(1),
     interviewReadyVersion: z.string().min(1)
   }),
-  suggestedNextStep: z.array(z.string().min(1)).min(1).max(3)
+  suggestedNextStep: z.array(z.string().min(1))
 });
 
 export const generateSchema = z.object({
