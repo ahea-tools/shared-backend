@@ -46,35 +46,84 @@ export async function POST(req: NextRequest) {
   let inputText = ''; const isCareerTool = parsed.data.toolId === 'career-positioning';
   if (isCareerTool) {
     const inputValidation = careerPositioningInputSchema.safeParse(parsed.data.input);
-    if (!inputValidation.success) { diagnostics.failureStep = 'input_validation_failed'; console.info('[api/generate] career_positioning_diagnostics', diagnostics); return withCors(req, invalidRequest('Invalid generation request.', toIssueDetails(inputValidation.error.issues))); }
+    if (!inputValidation.success) {
+      diagnostics.failureStep = 'input_validation_failed';
+      const details = toIssueDetails(inputValidation.error.issues);
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      return withCors(req, invalidRequest('Invalid generation request.', details));
+    }
     diagnostics.inputValidationPassed = true;
-    inputText = ['Generation rules:', `outputType: ${inputValidation.data.outputType}`, `professionalContext: ${inputValidation.data.professionalContext}`, `currentWork: ${inputValidation.data.currentWork}`, `desiredDirection: ${inputValidation.data.desiredDirection}`, `emphasis: ${inputValidation.data.emphasis.join(', ')}`, `currentLanguage: ${inputValidation.data.currentLanguage}`, inputValidation.data.additionalContext ? `additionalContext: ${inputValidation.data.additionalContext}` : null].filter(Boolean).join('\n');
+    inputText = [
+      'Generation rules:',
+      '1. Do not invent facts, credentials, job titles, outcomes, metrics, or claims not provided by the user.',
+      '2. Preserve user intent and substance while strengthening clarity and transferability.',
+      '3. Avoid generic resume cliches and empty language.',
+      '4. Keep output focused on career positioning and professional value, not strategic messaging.',
+      '5. Do not use the phrase politically sensitive in user-facing output.',
+      '6. Keep tone supportive, practical, and immediately usable.',
+      '7. Do not promise interviews, jobs, promotions, contracts, or funding outcomes.',
+      `outputType: ${inputValidation.data.outputType}`,
+      `professionalContext: ${inputValidation.data.professionalContext}`,
+      `currentWork: ${inputValidation.data.currentWork}`,
+      `desiredDirection: ${inputValidation.data.desiredDirection}`,
+      `emphasis: ${inputValidation.data.emphasis.join(', ')}`,
+      `currentLanguage: ${inputValidation.data.currentLanguage}`,
+      inputValidation.data.additionalContext ? `additionalContext: ${inputValidation.data.additionalContext}` : null
+    ].filter(Boolean).join('\n');
   } else {
     const inputValidation = strategicMessagingInputSchema.safeParse(parsed.data.input);
-    if (!inputValidation.success) return withCors(req, invalidRequest('Invalid generation request.', toIssueDetails(inputValidation.error.issues)));
+    if (!inputValidation.success) {
+      const details = toIssueDetails(inputValidation.error.issues);
+      return withCors(req, invalidRequest('Invalid generation request.', details));
+    }
+
     const normalizedAudience = STRATEGIC_AUDIENCE_MAP[inputValidation.data.audience.toLowerCase()] ?? inputValidation.data.audience;
     const normalizedMode = STRATEGIC_MODE_MAP[inputValidation.data.mode.toLowerCase()] ?? inputValidation.data.mode;
     inputText = [`Message: ${inputValidation.data.message}`, `Audience: ${normalizedAudience}`, `Mode: ${normalizedMode}`].join('\n');
   }
   if (inputText.length > tool.maxInputChars) return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'input', message: 'Input exceeds allowed length for this tool.' }]))
 
-  const profileRes = session?.userId ? await getSupabaseAdmin().from('profiles').select('id,email,email_verified,access_status,access_expires_at,generations_used').eq('id', session.userId).maybeSingle() : { data: null };
+  if (inputText.length > tool.maxInputChars) return withCors(req, invalidRequest('Invalid generation request.', [{ path: 'input', message: 'Input exceeds allowed length for this tool.' }]));
+
+  const profileRes = session?.userId
+    ? await getSupabaseAdmin().from('profiles').select('id,email,email_verified,access_status,access_expires_at,generations_used').eq('id', session.userId).maybeSingle()
+    : { data: null };
   const profile = (profileRes.data ?? null) as Profile | null;
   diagnostics.profileLoaded = Boolean(profile);
   const rate = await checkRateLimit(session?.userId ? `gen:${session.userId}` : `gen:anon:${req.headers.get('x-forwarded-for') ?? 'unknown'}`, 20, 60);
   diagnostics.rateLimitPassed = !rate.limited;
   const access = evaluateGenerationAccess(profile, rate.limited, null);
-  if (!access.allowed && access.reason) { if (isCareerTool) { diagnostics.accessDecision = 'blocked'; diagnostics.failureStep = access.reason === 'rate_limited' ? 'rate_limit_failed' : 'missing_or_invalid_session'; console.info('[api/generate] career_positioning_diagnostics', diagnostics);} return withCors(req, blockedResponse(access.reason, 'Generation is currently blocked.', { generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: profile?.access_status ?? 'free' })); }
+
+  if (!access.allowed && access.reason) {
+    if (isCareerTool) {
+      diagnostics.accessDecision = 'blocked';
+      diagnostics.failureStep = access.reason === 'rate_limited' ? 'rate_limit_failed' : 'missing_or_invalid_session';
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+    }
+    return withCors(req, blockedResponse(access.reason, 'Generation is currently blocked.', {
+      generationsUsed: profile?.generations_used ?? 0,
+      freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
+      remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)),
+      accessStatus: profile?.access_status ?? 'free'
+    }));
+  }
   if (isCareerTool) diagnostics.accessDecision = 'allowed';
 
   try {
-    diagnostics.openaiCallStarted = true;
+    if (isCareerTool) diagnostics.openaiCallStarted = true;
     const result = await runGeneration(tool, inputText);
-    diagnostics.openaiCallSucceeded = true;
-    diagnostics.openaiResponseHasOutput = Boolean(result.outputText);
+    if (isCareerTool) diagnostics.openaiCallSucceeded = true;
     let candidateOutput: unknown = result.outputText;
     if (typeof candidateOutput === 'string') {
-      try { candidateOutput = JSON.parse(candidateOutput); } catch { diagnostics.failureStep = 'openai_response_parse_failed'; console.info('[api/generate] career_positioning_diagnostics', diagnostics); return withCors(req, safeGenerationError('Generation failed. Please try again.', 502)); }
+      try {
+        candidateOutput = JSON.parse(candidateOutput);
+      } catch {
+        if (isCareerTool) {
+          diagnostics.failureStep = 'openai_response_parse_failed';
+          console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+          return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+        }
+      }
     }
     diagnostics.openaiParsedOutputType = Array.isArray(candidateOutput) ? 'array' : typeof candidateOutput;
     const keys = candidateOutput && typeof candidateOutput === 'object' ? Object.keys(candidateOutput as Record<string, unknown>) : [];
