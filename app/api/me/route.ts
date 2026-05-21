@@ -5,84 +5,108 @@ import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/aut
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 
 export async function GET(req: NextRequest) {
-  const sessionDetails = await getBackendSessionDetails();
-  const session = sessionDetails.session;
-  const hasSessionCookie = Boolean(req.cookies.get(BACKEND_SESSION_COOKIE_NAME)?.value);
   const requestOrigin = req.headers.get('origin');
   const originAllowed = isAllowedOrigin(requestOrigin);
+  const hasSessionCookie = Boolean(req.cookies.get(BACKEND_SESSION_COOKIE_NAME)?.value);
   const origin = req.nextUrl.origin;
 
-  let email: string | null = null;
-  let emailVerified = false;
-  let generationsUsed = 0;
-  let accessStatus = 'free';
+  const diagnostics = {
+    routeVersion: 'me-debug-v4',
+    requestOrigin,
+    originAllowed,
+    hasSessionCookie,
+    sessionCookieValid: false,
+    sessionFailureReason: 'unknown' as 'missing_cookie' | 'bad_signature' | 'invalid_format' | 'expired' | 'unknown',
+    userIdPresent: false,
+    profileLoaded: false,
+    profileVerified: false,
+    usageLoaded: false,
+    entitlementLoaded: false,
+    accessEvaluationSucceeded: false,
+    failureStep: null as string | null,
+    sanitizedErrorName: null as string | null,
+    sanitizedErrorMessage: null as string | null
+  };
 
-  let failureReason: 'missing_cookie' | 'bad_signature' | 'expired' | 'user_not_found' | 'unverified' | null = null;
+  try {
+    const sessionDetails = await getBackendSessionDetails();
+    const session = sessionDetails.session;
+    diagnostics.sessionCookieValid = Boolean(session?.userId);
+    diagnostics.userIdPresent = Boolean(session?.userId);
+    diagnostics.sessionFailureReason = (sessionDetails.failureReason as any) ?? 'unknown';
 
-  if (session?.userId) {
-    const { data: profile } = await getSupabaseAdmin()
-      .from('profiles')
-      .select('email,email_verified,generations_used,access_status')
-      .eq('id', session.userId)
-      .maybeSingle();
-    if (profile) {
-      console.info('[api/me] profile hydration succeeded', { hasEmail: Boolean(profile.email), emailVerified: Boolean(profile.email_verified) });
-      email = profile.email;
-      emailVerified = Boolean(profile.email_verified);
-      generationsUsed = Number(profile.generations_used || 0);
-      accessStatus = profile.access_status || 'free';
-      if (!emailVerified) failureReason = 'unverified';
+    let emailVerified = false;
+    let generationsUsed = 0;
+    let accessStatus = 'free';
+
+    if (session?.userId) {
+      const { data: profile } = await getSupabaseAdmin()
+        .from('profiles')
+        .select('email_verified,generations_used,access_status')
+        .eq('id', session.userId)
+        .maybeSingle();
+      diagnostics.profileLoaded = Boolean(profile);
+      if (profile) {
+        emailVerified = Boolean(profile.email_verified);
+        generationsUsed = Number(profile.generations_used || 0);
+        accessStatus = profile.access_status || 'free';
+        diagnostics.profileVerified = emailVerified;
+        diagnostics.usageLoaded = true;
+        diagnostics.entitlementLoaded = true;
+        diagnostics.accessEvaluationSucceeded = true;
+      } else {
+        diagnostics.failureStep = 'profile_not_found';
+      }
     } else {
-      console.info('[api/me] profile hydration skipped_or_missing', { hasSessionUserId: Boolean(session?.userId) });
-      failureReason = 'user_not_found';
+      diagnostics.failureStep = 'missing_or_invalid_session';
     }
-  } else {
-    failureReason = sessionDetails.failureReason === 'invalid_format' ? 'bad_signature' : sessionDetails.failureReason;
-  }
 
-  const remainingFreeGenerations = Math.max(0, FREE_GENERATIONS_LIMIT - generationsUsed);
+    const remainingFreeGenerations = Math.max(0, FREE_GENERATIONS_LIMIT - generationsUsed);
+    const isAuthenticated = Boolean(session?.userId);
+    const isVerified = Boolean(isAuthenticated && emailVerified);
 
-  const isAuthenticated = Boolean(session?.userId);
+    console.info('[api/me] diagnostics', diagnostics);
 
-  if (!isAuthenticated || !emailVerified) {
-    console.info('[api/me] unauthenticated', {
-      hasSessionCookie,
-      sessionCookieValid: Boolean(session?.userId),
-      failureReason: failureReason ?? 'missing_cookie',
-      requestOrigin,
-      originAllowed
-    });
-  }
-
-  return withCors(req, NextResponse.json({
-    status: 'success',
-    authenticated: isAuthenticated,
-    isAuthenticated,
-    verified: emailVerified,
-    isVerified: emailVerified,
-    user: {
-      email,
-      emailVerified
-    },
-    usage: {
+    return withCors(req, NextResponse.json({
+      status: 'success',
+      authenticated: isAuthenticated,
+      isAuthenticated,
+      verified: isVerified,
+      isVerified,
       generationsUsed,
       freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
       remainingFreeGenerations,
-      accessStatus
-    },
-    membership: {
-      hasActiveMembership: accessStatus === 'paid' || accessStatus === 'comped' || accessStatus === 'admin',
-      membershipStatus: 'unknown',
-      billingInterval: 'unknown',
-      currentPeriodEnd: null
-    },
-    paywall: emailVerified ? allowedPaywallState() : authPaywallState(origin),
-    auth: {
-      startEndpoint: `${origin}/api/auth/start`,
-      verifyEndpoint: `${origin}/api/auth/verify`,
-      callbackEndpoint: `${origin}/api/auth/callback`
-    }
-  }));
+      freeGenerationsRemaining: remainingFreeGenerations,
+      accessStatus,
+      accessState: accessStatus,
+      message: isVerified ? 'Authenticated.' : 'Authentication required.',
+      paywallUrl: isVerified ? null : `${origin}/api/auth/start`,
+      usage: {
+        generationsUsed,
+        freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
+        remainingFreeGenerations,
+        accessStatus
+      },
+      paywall: isVerified ? allowedPaywallState() : authPaywallState(origin)
+    }));
+  } catch (error) {
+    diagnostics.failureStep = diagnostics.failureStep ?? 'unknown';
+    diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
+    diagnostics.sanitizedErrorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.info('[api/me] diagnostics', diagnostics);
+    return withCors(req, NextResponse.json({
+      status: 'error',
+      authenticated: false,
+      isAuthenticated: false,
+      verified: false,
+      isVerified: false,
+      generationsUsed: 0,
+      freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
+      remainingFreeGenerations: FREE_GENERATIONS_LIMIT,
+      accessStatus: 'error',
+      message: 'Unable to load account status.'
+    }, { status: 500 }));
+  }
 }
 
 export async function OPTIONS(req: NextRequest) {
