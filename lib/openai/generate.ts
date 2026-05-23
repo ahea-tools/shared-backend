@@ -55,8 +55,8 @@ const careerSchema = {
 function extractGenerationOutput(response: any) {
   const outputArray = Array.isArray(response?.output) ? response.output : [];
   const contentItems = outputArray.flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []));
-  const parsedContent = contentItems.find((content: any) => content && typeof content.parsed === 'object' && content.parsed !== null);
-  const textContent = contentItems.find((content: any) => typeof content?.text === 'string');
+  const parsedContent = contentItems.find((content: any) => content && content.parsed !== undefined && content.parsed !== null);
+  const usableString = (value: unknown) => (typeof value === 'string' && value.trim().length > 0 ? value : null);
 
   const diagnostics = {
     hasOutputText: typeof response?.outputText === 'string',
@@ -64,30 +64,64 @@ function extractGenerationOutput(response: any) {
     outputArrayLength: outputArray.length,
     contentTypes: [...new Set(contentItems.map((content: any) => content?.type).filter((type: unknown) => typeof type === 'string'))],
     hasParsedContent: Boolean(parsedContent),
-    extractionMethod: 'none'
+    extractionMethod: 'none',
+    extractedOutputType: null as string | null,
+    extractedOutputLength: 0,
+    extractedOutputNonEmpty: false,
+    returnedOutputTextType: 'null' as string,
+    returnedOutputTextLength: 0,
+    returnedOutputTextNonEmpty: false
   };
 
-  if (typeof response?.outputText === 'string') {
+  let extractedOutput: string | null = null;
+  if (usableString(response?.outputText)) {
     diagnostics.extractionMethod = 'outputText';
-    return { outputText: response.outputText, diagnostics };
+    extractedOutput = response.outputText;
   }
-
-  if (typeof response?.output_text === 'string') {
+  if (!extractedOutput && usableString(response?.output_text)) {
     diagnostics.extractionMethod = 'output_text';
-    return { outputText: response.output_text, diagnostics };
+    extractedOutput = response.output_text;
+  }
+  if (!extractedOutput) {
+    for (const content of contentItems) {
+      if (content?.parsed === undefined || content?.parsed === null) continue;
+      if (typeof content.parsed === 'string' && content.parsed.trim().length > 0) {
+        diagnostics.extractionMethod = 'content.parsed.string';
+        extractedOutput = content.parsed;
+        break;
+      }
+      if (typeof content.parsed === 'object') {
+        diagnostics.extractionMethod = 'content.parsed.object';
+        extractedOutput = JSON.stringify(content.parsed);
+        break;
+      }
+    }
+  }
+  if (!extractedOutput) {
+    const textContent = contentItems.find((content: any) => usableString(content?.text));
+    if (textContent) {
+      diagnostics.extractionMethod = 'content.text';
+      extractedOutput = textContent.text;
+    }
+  }
+  if (!extractedOutput) {
+    const outputTextItem = contentItems.find((content: any) => content?.type === 'output_text' && usableString(content?.text));
+    if (outputTextItem) {
+      diagnostics.extractionMethod = 'content.type_output_text.text';
+      extractedOutput = outputTextItem.text;
+    }
   }
 
-  if (parsedContent) {
-    diagnostics.extractionMethod = 'content.parsed';
-    return { outputText: JSON.stringify(parsedContent.parsed), diagnostics };
-  }
+  diagnostics.extractedOutputType = extractedOutput === null ? 'null' : typeof extractedOutput;
+  diagnostics.extractedOutputLength = typeof extractedOutput === 'string' ? extractedOutput.length : 0;
+  diagnostics.extractedOutputNonEmpty = typeof extractedOutput === 'string' && extractedOutput.trim().length > 0;
 
-  if (textContent) {
-    diagnostics.extractionMethod = 'content.text';
-    return { outputText: textContent.text, diagnostics };
-  }
+  const returnedOutputText = diagnostics.extractedOutputNonEmpty ? extractedOutput : null;
+  diagnostics.returnedOutputTextType = returnedOutputText === null ? 'null' : typeof returnedOutputText;
+  diagnostics.returnedOutputTextLength = typeof returnedOutputText === 'string' ? returnedOutputText.length : 0;
+  diagnostics.returnedOutputTextNonEmpty = typeof returnedOutputText === 'string' && returnedOutputText.trim().length > 0;
 
-  return { outputText: null, diagnostics };
+  return { outputText: returnedOutputText, diagnostics };
 }
 
 export async function runGeneration(tool: ToolConfig, input: string) {
