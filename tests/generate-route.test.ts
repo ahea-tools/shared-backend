@@ -61,9 +61,33 @@ describe('generate route career-positioning', () => {
   });
 
   it('openai parse failure returns safe non-200', async () => {
-    runGenerationMock.mockResolvedValueOnce({ outputText: null });
+    runGenerationMock.mockResolvedValueOnce({ outputText: '{ not-json }' });
     const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
     expect(res.status).toBe(502);
+  });
+
+  it('raw valid JSON string parses and returns 200', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify(validOutput) });
+    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    expect(res.status).toBe(200);
+  });
+
+  it('markdown fenced json parses and returns 200', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: `\n\`\`\`json\n${JSON.stringify(validOutput, null, 2)}\n\`\`\`` });
+    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    expect(res.status).toBe(200);
+  });
+
+  it('markdown fenced plain parses and returns 200', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: `\n\`\`\`\n${JSON.stringify(validOutput)}\n\`\`\`` });
+    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    expect(res.status).toBe(200);
+  });
+
+  it('prose wrapped with balanced object parses and returns 200', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: `Here is your result:\n${JSON.stringify(validOutput)}\nThanks.` });
+    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
+    expect(res.status).toBe(200);
   });
 
   it('structured output failure returns safe non-200', async () => {
