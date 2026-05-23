@@ -14,6 +14,87 @@ import { logGenerationEvent } from '@/lib/usage/events';
 const CAREER_TOP_LEVEL_KEYS = ['careerPositioningSummary', 'transferableValueMap', 'experienceReframe', 'roleAndOpportunityFit', 'talkingPoints', 'suggestedNextStep'];
 const STRATEGIC_AUDIENCE_MAP: Record<string, string> = { 'leadership / board': 'leadership-board', funders: 'funders', policymakers: 'policymakers', 'community partners': 'community-partners', 'internal team': 'internal-team', 'general public': 'general-public' };
 const STRATEGIC_MODE_MAP: Record<string, string> = { standard: 'standard', 'plain-language': 'plain-language', 'careful / neutral': 'careful-neutral', 'highly constrained': 'highly-constrained', 'more direct': 'more-direct' };
+type JsonParseAttempt = 'direct_json' | 'fenced_json' | 'balanced_object' | 'already_object' | 'failed';
+type SafeJsonParseResult = {
+  success: boolean;
+  parsed: unknown;
+  parseAttemptUsed: JsonParseAttempt;
+  parseErrorName: string | null;
+  parseErrorMessage: string | null;
+};
+
+const sanitizeErrorMessage = (value: unknown) => {
+  const message = value instanceof Error ? value.message : typeof value === 'string' ? value : 'Unknown parse error';
+  return message.slice(0, 200);
+};
+
+const extractFirstBalancedTopLevelObject = (input: string): string | null => {
+  const start = input.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = start; i < input.length; i += 1) {
+    const char = input[i];
+    if (inString) {
+      if (escaping) escaping = false;
+      else if (char === '\\') escaping = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return input.slice(start, i + 1);
+      if (depth < 0) return null;
+    }
+  }
+  return null;
+};
+
+const safeParseJsonOutput = (input: unknown): SafeJsonParseResult => {
+  if (input && typeof input === 'object') return { success: true, parsed: input, parseAttemptUsed: 'already_object', parseErrorName: null, parseErrorMessage: null };
+  if (typeof input !== 'string') return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: 'TypeError', parseErrorMessage: 'Output was not a JSON object or string.' };
+
+  const trimmed = input.trim();
+  try {
+    return { success: true, parsed: JSON.parse(trimmed), parseAttemptUsed: 'direct_json', parseErrorName: null, parseErrorMessage: null };
+  } catch (error) {
+    const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (fencedMatch) {
+      try {
+        return { success: true, parsed: JSON.parse(fencedMatch[1].trim()), parseAttemptUsed: 'fenced_json', parseErrorName: null, parseErrorMessage: null };
+      } catch (fenceError) {
+        const balanced = extractFirstBalancedTopLevelObject(trimmed);
+        if (balanced) {
+          try {
+            return { success: true, parsed: JSON.parse(balanced), parseAttemptUsed: 'balanced_object', parseErrorName: null, parseErrorMessage: null };
+          } catch (balancedError) {
+            return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: balancedError instanceof Error ? balancedError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(balancedError) };
+          }
+        }
+        return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: fenceError instanceof Error ? fenceError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(fenceError) };
+      }
+    }
+
+    const balanced = extractFirstBalancedTopLevelObject(trimmed);
+    if (balanced) {
+      try {
+        return { success: true, parsed: JSON.parse(balanced), parseAttemptUsed: 'balanced_object', parseErrorName: null, parseErrorMessage: null };
+      } catch (balancedError) {
+        return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: balancedError instanceof Error ? balancedError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(balancedError) };
+      }
+    }
+
+    return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: error instanceof Error ? error.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(error) };
+  }
+};
 const toIssueDetails = (issues: Array<{ path: (string | number)[]; message: string }>) => issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }));
 const invalidRequest = (message: string, details: Array<{ path: string; message: string }> = []) => NextResponse.json({ status: 'error', reason: 'invalid_request', message, details }, { status: 400 });
 const safeGenerationError = (message = 'Generation failed. Please try again.', status = 500) => NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status });
@@ -62,6 +143,9 @@ export async function POST(req: NextRequest) {
       '5. Do not use the phrase politically sensitive in user-facing output.',
       '6. Keep tone supportive, practical, and immediately usable.',
       '7. Do not promise interviews, jobs, promotions, contracts, or funding outcomes.',
+      '8. Return only one JSON object that exactly matches the required schema.',
+      '9. Do not include markdown, code fences, prose, commentary, or wrapper keys.',
+      '10. Do not omit required keys and do not rename keys.',
       `outputType: ${inputValidation.data.outputType}`,
       `professionalContext: ${inputValidation.data.professionalContext}`,
       `currentWork: ${inputValidation.data.currentWork}`,
@@ -114,19 +198,34 @@ export async function POST(req: NextRequest) {
     const result = await runGeneration(tool, inputText);
     if (isCareerTool) diagnostics.openaiCallSucceeded = true;
     diagnostics.openaiResponseHasOutput = typeof result.outputText === 'string' && result.outputText.trim().length > 0;
-    let candidateOutput: unknown = result.outputText;
-    if (typeof candidateOutput === 'string') {
-      try {
-        candidateOutput = JSON.parse(candidateOutput);
-      } catch {
-        if (isCareerTool) {
-          diagnostics.failureStep = 'openai_response_parse_failed';
-          console.info('[api/generate] career_positioning_diagnostics', diagnostics);
-          return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
-        }
-      }
+    const parseDiagnostics = {
+      outputTextLength: typeof result.outputText === 'string' ? result.outputText.length : null,
+      outputTextTrimmedLength: typeof result.outputText === 'string' ? result.outputText.trim().length : null,
+      startsWithBrace: typeof result.outputText === 'string' ? result.outputText.trimStart().startsWith('{') : false,
+      startsWithBracket: typeof result.outputText === 'string' ? result.outputText.trimStart().startsWith('[') : false,
+      startsWithFence: typeof result.outputText === 'string' ? result.outputText.trimStart().startsWith('```') : false,
+      containsJsonFence: typeof result.outputText === 'string' ? /```(?:json)?/i.test(result.outputText) : false,
+      parseAttemptUsed: 'failed' as JsonParseAttempt,
+      parseSucceeded: false,
+      parsedOutputType: null as string | null,
+      parseErrorName: null as string | null,
+      parseErrorMessage: null as string | null
+    };
+    const parsedOutput = safeParseJsonOutput(result.outputText);
+    parseDiagnostics.parseAttemptUsed = parsedOutput.parseAttemptUsed;
+    parseDiagnostics.parseSucceeded = parsedOutput.success;
+    parseDiagnostics.parseErrorName = parsedOutput.parseErrorName;
+    parseDiagnostics.parseErrorMessage = parsedOutput.parseErrorMessage;
+    let candidateOutput: unknown = parsedOutput.parsed;
+    if (!parsedOutput.success && isCareerTool) {
+      diagnostics.failureStep = 'openai_response_parse_failed';
+      console.info('[api/generate] career_positioning_parse_diagnostics', parseDiagnostics);
+      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
     }
     diagnostics.openaiParsedOutputType = Array.isArray(candidateOutput) ? 'array' : typeof candidateOutput;
+    parseDiagnostics.parsedOutputType = diagnostics.openaiParsedOutputType;
+    if (isCareerTool) console.info('[api/generate] career_positioning_parse_diagnostics', parseDiagnostics);
     const keys = candidateOutput && typeof candidateOutput === 'object' ? Object.keys(candidateOutput as Record<string, unknown>) : [];
     diagnostics.missingTopLevelKeys = CAREER_TOP_LEVEL_KEYS.filter((k) => !keys.includes(k));
     diagnostics.unexpectedTopLevelKeys = keys.filter((k) => !CAREER_TOP_LEVEL_KEYS.includes(k));
