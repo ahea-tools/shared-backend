@@ -113,6 +113,7 @@ export async function POST(req: NextRequest) {
     if (isCareerTool) diagnostics.openaiCallStarted = true;
     const result = await runGeneration(tool, inputText);
     if (isCareerTool) diagnostics.openaiCallSucceeded = true;
+    diagnostics.openaiResponseHasOutput = typeof result.outputText === 'string' && result.outputText.trim().length > 0;
     let candidateOutput: unknown = result.outputText;
     if (typeof candidateOutput === 'string') {
       try {
