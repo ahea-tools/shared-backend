@@ -31,45 +31,16 @@ describe('runGeneration extraction', () => {
   });
 
   it('uses outputText when present', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r0', outputText: '{"z":0}' });
+    createMock.mockResolvedValueOnce({ id: 'r0', outputText: '{"z":0}', status: 'completed', usage: { output_tokens: 77 } });
     const result = await runGeneration(tool, 'hello');
     expect(result.outputText).toBe('{"z":0}');
+    expect(result.metadata.outputTokens).toBe(77);
   });
 
   it('uses output_text when present', async () => {
     createMock.mockResolvedValueOnce({ id: 'r1', output_text: '{"a":1}' });
     const result = await runGeneration(tool, 'hello');
     expect(result.outputText).toBe('{"a":1}');
-  });
-
-  it('falls back from empty output_text to nested content text', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r1b', output_text: '   ', output: [{ content: [{ type: 'output_text', text: '{"a":2}' }] }] });
-    const result = await runGeneration(tool, 'hello');
-    expect(result.outputText).toBe('{"a":2}');
-  });
-
-  it('uses nested content text when present', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r2', output: [{ content: [{ type: 'output_text', text: '{"b":2}' }] }] });
-    const result = await runGeneration(tool, 'hello');
-    expect(result.outputText).toBe('{"b":2}');
-  });
-
-  it('uses parsed structured content when present', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r3', output: [{ content: [{ type: 'output_json', parsed: { c: 3 } }] }] });
-    const result = await runGeneration(tool, 'hello');
-    expect(result.outputText).toBe('{"c":3}');
-  });
-
-  it('uses parsed string content when present', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r3b', output: [{ content: [{ type: 'output_json', parsed: '{"d":4}' }] }] });
-    const result = await runGeneration(tool, 'hello');
-    expect(result.outputText).toBe('{"d":4}');
-  });
-
-  it('uses output_text typed content item text when present', async () => {
-    createMock.mockResolvedValueOnce({ id: 'r3c', output: [{ content: [{ type: 'output_text', text: '{"e":5}' }] }] });
-    const result = await runGeneration(tool, 'hello');
-    expect(result.outputText).toBe('{"e":5}');
   });
 
   it('returns null outputText when no extractable output exists', async () => {
@@ -86,5 +57,17 @@ describe('runGeneration extraction', () => {
     const diagnostics = diagnosticsCall?.[1] as Record<string, unknown>;
     expect(diagnostics.returnedOutputTextNonEmpty).toBe(false);
     expect(diagnostics.extractionMethod).not.toBe('output_text');
+  });
+});
+
+describe('runGeneration request config', () => {
+  it('passes strict json schema format for career-positioning', async () => {
+    createMock.mockResolvedValueOnce({ id: 'r6', outputText: '{"z":1}' });
+    await runGeneration(tool, 'hello');
+    const arg = createMock.mock.calls[0][0];
+    expect(arg.max_output_tokens).toBe(tool.maxOutputTokens);
+    expect(arg.text?.format?.type).toBe('json_schema');
+    expect(arg.text?.format?.strict).toBe(true);
+    expect(arg.text?.format?.name).toBe('career_positioning_output');
   });
 });

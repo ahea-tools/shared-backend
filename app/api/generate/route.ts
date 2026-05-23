@@ -66,32 +66,6 @@ const safeParseJsonOutput = (input: unknown): SafeJsonParseResult => {
   try {
     return { success: true, parsed: JSON.parse(trimmed), parseAttemptUsed: 'direct_json', parseErrorName: null, parseErrorMessage: null };
   } catch (error) {
-    const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    if (fencedMatch) {
-      try {
-        return { success: true, parsed: JSON.parse(fencedMatch[1].trim()), parseAttemptUsed: 'fenced_json', parseErrorName: null, parseErrorMessage: null };
-      } catch (fenceError) {
-        const balanced = extractFirstBalancedTopLevelObject(trimmed);
-        if (balanced) {
-          try {
-            return { success: true, parsed: JSON.parse(balanced), parseAttemptUsed: 'balanced_object', parseErrorName: null, parseErrorMessage: null };
-          } catch (balancedError) {
-            return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: balancedError instanceof Error ? balancedError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(balancedError) };
-          }
-        }
-        return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: fenceError instanceof Error ? fenceError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(fenceError) };
-      }
-    }
-
-    const balanced = extractFirstBalancedTopLevelObject(trimmed);
-    if (balanced) {
-      try {
-        return { success: true, parsed: JSON.parse(balanced), parseAttemptUsed: 'balanced_object', parseErrorName: null, parseErrorMessage: null };
-      } catch (balancedError) {
-        return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: balancedError instanceof Error ? balancedError.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(balancedError) };
-      }
-    }
-
     return { success: false, parsed: null, parseAttemptUsed: 'failed', parseErrorName: error instanceof Error ? error.name : 'ParseError', parseErrorMessage: sanitizeErrorMessage(error) };
   }
 };
@@ -209,13 +183,38 @@ export async function POST(req: NextRequest) {
       parseSucceeded: false,
       parsedOutputType: null as string | null,
       parseErrorName: null as string | null,
-      parseErrorMessage: null as string | null
+      parseErrorMessage: null as string | null,
+      parseErrorAtEnd: false,
+      endsWithBrace: typeof result.outputText === 'string' ? result.outputText.trimEnd().endsWith('}') : false,
+      endsWithBracket: typeof result.outputText === 'string' ? result.outputText.trimEnd().endsWith(']') : false,
+      likelyTruncatedJson: false,
+      maxOutputTokensConfigured: tool.maxOutputTokens,
+      finishReason: result.metadata?.finishReason ?? null,
+      incompleteReason: result.metadata?.incompleteReason ?? null,
+      outputTokens: result.metadata?.outputTokens ?? null
     };
     const parsedOutput = safeParseJsonOutput(result.outputText);
     parseDiagnostics.parseAttemptUsed = parsedOutput.parseAttemptUsed;
     parseDiagnostics.parseSucceeded = parsedOutput.success;
     parseDiagnostics.parseErrorName = parsedOutput.parseErrorName;
     parseDiagnostics.parseErrorMessage = parsedOutput.parseErrorMessage;
+
+    const parseErrorPosition = (() => {
+      const message = parsedOutput.parseErrorMessage;
+      if (!message) return null;
+      const match = message.match(/position\s+(\d+)/i);
+      return match ? Number.parseInt(match[1], 10) : null;
+    })();
+    const trimmedLength = typeof result.outputText === 'string' ? result.outputText.trim().length : 0;
+    parseDiagnostics.parseErrorAtEnd = typeof parseErrorPosition === 'number' && Number.isFinite(parseErrorPosition)
+      ? Math.abs(trimmedLength - parseErrorPosition) <= 20
+      : false;
+    parseDiagnostics.likelyTruncatedJson = Boolean(
+      !parsedOutput.success
+      && parseDiagnostics.startsWithBrace
+      && !parseDiagnostics.endsWithBrace
+      && parseDiagnostics.parseErrorAtEnd
+    );
     let candidateOutput: unknown = parsedOutput.parsed;
     if (!parsedOutput.success && isCareerTool) {
       diagnostics.failureStep = 'openai_response_parse_failed';

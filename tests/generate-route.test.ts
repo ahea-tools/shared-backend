@@ -72,22 +72,14 @@ describe('generate route career-positioning', () => {
     expect(res.status).toBe(200);
   });
 
-  it('markdown fenced json parses and returns 200', async () => {
-    runGenerationMock.mockResolvedValueOnce({ outputText: `\n\`\`\`json\n${JSON.stringify(validOutput, null, 2)}\n\`\`\`` });
+  it('incomplete JSON ending mid-string returns 502 and parse_failed', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    runGenerationMock.mockResolvedValueOnce({ outputText: '{"careerPositioningSummary":"abc' });
     const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(res.status).toBe(200);
-  });
-
-  it('markdown fenced plain parses and returns 200', async () => {
-    runGenerationMock.mockResolvedValueOnce({ outputText: `\n\`\`\`\n${JSON.stringify(validOutput)}\n\`\`\`` });
-    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(res.status).toBe(200);
-  });
-
-  it('prose wrapped with balanced object parses and returns 200', async () => {
-    runGenerationMock.mockResolvedValueOnce({ outputText: `Here is your result:\n${JSON.stringify(validOutput)}\nThanks.` });
-    const res = await POST(makeReq({ toolId: 'career-positioning', input: validInput }));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(502);
+    const parseCall = infoSpy.mock.calls.find((call) => call[0] === '[api/generate] career_positioning_parse_diagnostics');
+    expect(parseCall?.[1]?.likelyTruncatedJson).toBe(true);
+    infoSpy.mockRestore();
   });
 
   it('structured output failure returns safe non-200', async () => {

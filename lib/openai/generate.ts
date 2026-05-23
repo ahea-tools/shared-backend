@@ -124,6 +124,13 @@ function extractGenerationOutput(response: any) {
   return { outputText: returnedOutputText, diagnostics };
 }
 
+export type GenerationMetadata = {
+  finishReason: string | null;
+  incompleteReason: string | null;
+  outputTokens: number | null;
+  responseStatus: string | null;
+};
+
 export async function runGeneration(tool: ToolConfig, input: string) {
   const isCareer = tool.toolId === 'career-positioning';
   const response = await openaiClient.responses.create({
@@ -145,6 +152,14 @@ export async function runGeneration(tool: ToolConfig, input: string) {
   });
 
   const extracted = extractGenerationOutput(response);
-  console.info('[openai/generate] response_extraction', extracted.diagnostics);
-  return { outputText: extracted.outputText, responseId: response.id };
+  const responseAny = response as any;
+  const metadata: GenerationMetadata = {
+    finishReason: typeof responseAny?.finish_reason === 'string' ? responseAny.finish_reason : null,
+    incompleteReason: typeof responseAny?.incomplete_details?.reason === 'string' ? responseAny.incomplete_details.reason : null,
+    outputTokens: typeof responseAny?.usage?.output_tokens === 'number' ? responseAny.usage.output_tokens : null,
+    responseStatus: typeof responseAny?.status === 'string' ? responseAny.status : null
+  };
+
+  console.info('[openai/generate] response_extraction', { ...extracted.diagnostics, ...metadata });
+  return { outputText: extracted.outputText, responseId: response.id, metadata };
 }
