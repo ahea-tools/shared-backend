@@ -100,7 +100,7 @@ export async function GET(req: NextRequest) {
 
   await supabaseAdmin
     .from('profiles')
-    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true, updated_at: new Date().toISOString() }, { onConflict: 'id', ignoreDuplicates: false });
+    .upsert({ id: verifiedUserId, email: verifiedEmail, email_verified: true, generations_used: 0, updated_at: new Date().toISOString() }, { onConflict: 'id', ignoreDuplicates: false });
 
   const response = NextResponse.redirect(returnUrl);
   setBackendSessionOnResponse(response, verifiedUserId!, verifiedEmail!);

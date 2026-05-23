@@ -80,7 +80,12 @@ export async function POST(req: NextRequest) {
   let parsedJson: unknown = null;
 
   const diagnostics = {
-    routeVersion: 'generate-career-positioning-debug-v4', toolId: null as string | null, failureStep: null as string | null,
+    routeVersion: 'usage-count-debug-v2', toolId: null as string | null, failureStep: null as string | null,
+    userIdPresent: Boolean(session?.userId), profileIdMatchesSession: false, currentGenerationsUsed: null as number | null,
+    nextGenerationsUsed: null as number | null, usageSourceOfTruth: 'profiles.generations_used', meReadsUsageSource: 'profiles.generations_used',
+    accessEvaluatorReadsUsageSource: 'profiles.generations_used', updateAttempted: false, updateSucceeded: false,
+    updateAffectedRows: null as number | null, updateErrorCode: null as string | null, updateErrorMessage: null as string | null,
+    generationEventLogged: false,
     requestParsed: false, inputValidationPassed: false, sessionPresent: hasSessionCookie, sessionValid: Boolean(session?.userId), profileLoaded: false,
     accessDecision: 'error' as 'allowed'|'blocked'|'error', rateLimitPassed: false, openaiCallStarted: false, openaiCallSucceeded: false,
     openaiResponseHasOutput: false, openaiParsedOutputType: null as string | null, structuredOutputValidationPassed: false,
@@ -148,6 +153,8 @@ export async function POST(req: NextRequest) {
     : { data: null };
   const profile = (profileRes.data ?? null) as Profile | null;
   diagnostics.profileLoaded = Boolean(profile);
+  diagnostics.profileIdMatchesSession = Boolean(profile?.id && session?.userId && profile.id === session.userId);
+  diagnostics.currentGenerationsUsed = profile?.generations_used ?? null;
   const rate = await checkRateLimit(session?.userId ? `gen:${session.userId}` : `gen:anon:${req.headers.get('x-forwarded-for') ?? 'unknown'}`, 20, 60);
   diagnostics.rateLimitPassed = !rate.limited;
   const access = evaluateGenerationAccess(profile, rate.limited, null);
@@ -242,8 +249,20 @@ export async function POST(req: NextRequest) {
     if (access.consumesFreeGeneration && session?.userId) {
       diagnostics.usageLoggingStarted = true;
       nextGenerationsUsed += 1;
-      const updateRes = await getSupabaseAdmin().from('profiles').update({ generations_used: nextGenerationsUsed }).eq('id', session.userId);
-      if ((updateRes as any)?.error) { diagnostics.failureStep = 'usage_logging_failed'; diagnostics.sanitizedErrorName = 'SupabaseUpdateError'; diagnostics.sanitizedErrorMessage = 'Failed to persist generations_used.'; console.info('[api/generate] career_positioning_diagnostics', diagnostics); return withCors(req, safeGenerationError()); }
+      diagnostics.nextGenerationsUsed = nextGenerationsUsed;
+      diagnostics.updateAttempted = true;
+      const updateRes = await getSupabaseAdmin().from('profiles').update({ generations_used: nextGenerationsUsed }).eq('id', session.userId).select('id');
+      diagnostics.updateErrorCode = (updateRes as any)?.error?.code ?? null;
+      diagnostics.updateErrorMessage = (updateRes as any)?.error?.message ? sanitizeErrorMessage((updateRes as any).error.message) : null;
+      diagnostics.updateAffectedRows = Array.isArray((updateRes as any)?.data) ? (updateRes as any).data.length : null;
+      if ((updateRes as any)?.error || diagnostics.updateAffectedRows === 0) {
+        diagnostics.failureStep = 'usage_logging_failed';
+        diagnostics.sanitizedErrorName = 'SupabaseUpdateError';
+        diagnostics.sanitizedErrorMessage = 'Failed to persist generations_used.';
+        console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+        return withCors(req, safeGenerationError());
+      }
+      diagnostics.updateSucceeded = true;
       diagnostics.usageLoggingSucceeded = true;
     }
 
@@ -251,6 +270,7 @@ export async function POST(req: NextRequest) {
     try {
       await logGenerationEvent({ tool_id: tool.toolId, user_id: session?.userId ?? null, status: 'success' });
       diagnostics.generationEventLoggingSucceeded = true;
+      diagnostics.generationEventLogged = true;
     } catch (error) {
       diagnostics.failureStep = 'generation_event_logging_failed';
       diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';

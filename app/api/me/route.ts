@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
 
   const diagnostics = {
-    routeVersion: 'me-debug-v4',
+    routeVersion: 'usage-count-debug-v2',
     requestOrigin,
     originAllowed,
     hasSessionCookie,
@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
     usageLoaded: false,
     entitlementLoaded: false,
     accessEvaluationSucceeded: false,
+    meReadsUsageSource: 'profiles.generations_used',
     failureStep: null as string | null,
     sanitizedErrorName: null as string | null,
     sanitizedErrorMessage: null as string | null
