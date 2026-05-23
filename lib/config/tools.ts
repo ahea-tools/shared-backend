@@ -17,7 +17,7 @@ export const toolRegistry: Record<string, ToolConfig> = {
     displayName: 'Career Positioning Tool',
     maxInputChars: 6000,
     model: 'gpt-4.1-mini',
-    maxOutputTokens: 1000,
+    maxOutputTokens: 3500,
     temperature: 0.35,
     returnUrl: process.env.CAREER_POSITIONING_URL || 'https://career-positioning.americanhealthequity.org',
     systemPrompt: `You are generating career positioning support for a member of the American Health Equity Association. The user may work in public health, health equity, healthcare, research, policy, community engagement, communications, philanthropy, nonprofit leadership, government, health systems, or adjacent fields.
