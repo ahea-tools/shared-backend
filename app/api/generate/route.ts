@@ -1,18 +1,20 @@
 import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { blockedResponse, FREE_GENERATIONS_LIMIT, successResponse } from '@/lib/responses/api-responses';
-import { careerPositioningInputSchema, careerPositioningOutputSchema, generateSchema, strategicMessagingInputSchema, strategicMessagingOutputSchema } from '@/lib/validation/schemas';
+import { careerPositioningInputSchema, careerPositioningOutputSchema, evidenceInPracticeInputSchema, evidenceInPracticeOutputSchema, generateSchema, strategicMessagingInputSchema, strategicMessagingOutputSchema } from '@/lib/validation/schemas';
 import { getTool } from '@/lib/config/tools';
 import { runGeneration } from '@/lib/openai/generate';
 import { preflightResponse, withCors } from '@/lib/security/cors';
 import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { checkRateLimit } from '@/lib/rate-limit';
-import { evaluateGenerationAccess, type Profile } from '@/lib/usage/access';
+import { evaluateGenerationAccess, getEffectiveAccessStatus, type Profile } from '@/lib/usage/access';
 import { logGenerationEvent } from '@/lib/usage/events';
+import { retrievePubMedArticles, type PubMedArticle } from '@/lib/pubmed';
 
 const CAREER_TOP_LEVEL_KEYS = ['careerPositioningSummary', 'transferableValueMap', 'experienceReframe', 'roleAndOpportunityFit', 'talkingPoints', 'suggestedNextStep'];
 const STRATEGIC_AUDIENCE_MAP: Record<string, string> = { 'leadership / board': 'leadership-board', funders: 'funders', policymakers: 'policymakers', 'community partners': 'community-partners', 'internal team': 'internal-team', 'general public': 'general-public' };
+const EVIDENCE_MIN_USABLE_ABSTRACTS = 3;
 const STRATEGIC_MODE_MAP: Record<string, string> = { standard: 'standard', 'plain-language': 'plain-language', 'careful / neutral': 'careful-neutral', 'highly constrained': 'highly-constrained', 'more direct': 'more-direct' };
 type JsonParseAttempt = 'direct_json' | 'fenced_json' | 'balanced_object' | 'already_object' | 'failed';
 type SafeJsonParseResult = {
@@ -21,6 +23,28 @@ type SafeJsonParseResult = {
   parseAttemptUsed: JsonParseAttempt;
   parseErrorName: string | null;
   parseErrorMessage: string | null;
+};
+
+
+const buildInsufficientEvidenceOutput = (sources: PubMedArticle[]) => ({
+  evidenceSnapshot: 'The backend found too few usable PubMed abstracts to produce a reliable Evidence in Practice synthesis for this request.',
+  keyTakeaways: ['The available abstracts were too limited to support confident practice-oriented takeaways.'],
+  whatAppearsMostEffective: ['Insufficient evidence was available from the retrieved abstracts to identify what appears most effective.'],
+  contextAndApplicability: ['No reliable applicability assessment can be made from the limited retrieved abstracts.'],
+  equityConsiderations: ['The retrieved abstracts were too limited to assess equity implications responsibly.'],
+  practiceConsiderations: ['Consider refining the topic, population, or setting to retrieve more directly relevant literature.'],
+  evidenceGapsAndUnansweredQuestions: ['More directly relevant studies with usable abstracts are needed before drawing action-oriented conclusions.'],
+  sourcesReviewed: sources.map(({ title, year, journal, pmid, pubmedUrl }) => ({ title, year, journal, pmid, pubmedUrl }))
+});
+
+const validateEvidenceSourceIntegrity = (output: { sourcesReviewed: Array<{ title: string; year: string | number; journal: string; pmid: string; pubmedUrl: string }> }, sources: PubMedArticle[]) => {
+  const byPmid = new Map(sources.map((s) => [s.pmid, s]));
+  for (const source of output.sourcesReviewed) {
+    const selected = byPmid.get(source.pmid);
+    if (!selected) return false;
+    if (source.title !== selected.title || source.journal !== selected.journal || String(source.year) !== String(selected.year) || source.pubmedUrl !== selected.pubmedUrl) return false;
+  }
+  return true;
 };
 
 const sanitizeErrorMessage = (value: unknown) => {
@@ -103,7 +127,7 @@ export async function POST(req: NextRequest) {
   const tool = getTool(parsed.data.toolId);
   if (!tool) return withCors(req, blockedResponse('invalid_tool', 'The requested tool is not available.'));
 
-  let inputText = ''; const isCareerTool = parsed.data.toolId === 'career-positioning';
+  let inputText = ''; const isCareerTool = parsed.data.toolId === 'career-positioning'; const isEvidenceTool = parsed.data.toolId === 'evidence-in-practice'; let evidenceSources: PubMedArticle[] = [];
   if (isCareerTool) {
     const inputValidation = careerPositioningInputSchema.safeParse(parsed.data.input);
     if (!inputValidation.success) {
@@ -132,6 +156,19 @@ export async function POST(req: NextRequest) {
       `emphasis: ${inputValidation.data.emphasis.join(', ')}`,
       `currentLanguage: ${inputValidation.data.currentLanguage}`,
       inputValidation.data.additionalContext ? `additionalContext: ${inputValidation.data.additionalContext}` : null
+    ].filter(Boolean).join('\n');
+  } else if (isEvidenceTool) {
+    const inputValidation = evidenceInPracticeInputSchema.safeParse(parsed.data.input);
+    if (!inputValidation.success) {
+      diagnostics.failureStep = 'input_validation_failed';
+      return withCors(req, invalidRequest('Invalid generation request.', toIssueDetails(inputValidation.error.issues)));
+    }
+    diagnostics.inputValidationPassed = true;
+    inputText = [
+      'Evidence in Practice request. Synthesize only the backend-retrieved PubMed abstracts below.',
+      `topic: ${inputValidation.data.topic}`,
+      inputValidation.data.population ? `population: ${inputValidation.data.population}` : null,
+      inputValidation.data.setting ? `setting: ${inputValidation.data.setting}` : null
     ].filter(Boolean).join('\n');
   } else {
     const inputValidation = strategicMessagingInputSchema.safeParse(parsed.data.input);
@@ -169,10 +206,40 @@ export async function POST(req: NextRequest) {
       generationsUsed: profile?.generations_used ?? 0,
       freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
       remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)),
-      accessStatus: profile?.access_status ?? 'free'
+      accessStatus: getEffectiveAccessStatus(profile)
     }));
   }
   if (isCareerTool) diagnostics.accessDecision = 'allowed';
+
+  if (isEvidenceTool) {
+    diagnostics.accessDecision = 'allowed';
+    try {
+      const validatedEvidenceInput = evidenceInPracticeInputSchema.parse(parsed.data.input);
+      const pubmed = await retrievePubMedArticles(validatedEvidenceInput);
+      (diagnostics as any).pubmedESearchCandidateCount = pubmed.candidateCount;
+      (diagnostics as any).pubmedUsableAbstractCount = pubmed.usableCount;
+      (diagnostics as any).selectedSourceCount = pubmed.selected.length;
+      evidenceSources = pubmed.selected;
+      if (pubmed.usableCount < EVIDENCE_MIN_USABLE_ABSTRACTS) {
+        const insufficient = buildInsufficientEvidenceOutput(pubmed.selected);
+        const valid = evidenceInPracticeOutputSchema.safeParse(insufficient);
+        if (!valid.success) return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+        await logGenerationEvent({ tool_id: tool.toolId, user_id: session?.userId ?? null, status: 'insufficient_evidence' });
+        return withCors(req, NextResponse.json({ status: 'insufficient_evidence', requestId: crypto.randomUUID(), toolId: tool.toolId, output: valid.data, usage: { generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: getEffectiveAccessStatus(profile) }, paywall: { show: false, variant: 'none', ctaLabel: null, ctaUrl: null, message: null } }));
+      }
+      const sourcePayload = pubmed.selected.map(({ pmid, title, journal, year, pubmedUrl, abstract }) => ({ pmid, title, journal, year, pubmedUrl, abstract }));
+      inputText = `${inputText}
+
+Retrieved PubMed abstracts (use only these):
+${JSON.stringify(sourcePayload)}`;
+    } catch (error) {
+      diagnostics.failureStep = 'pubmed_retrieval_failed';
+      diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
+      diagnostics.sanitizedErrorMessage = error instanceof Error ? sanitizeErrorMessage(error.message) : 'Unknown error';
+      console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
+      return withCors(req, safeGenerationError('Evidence retrieval failed. Please try again.', 502));
+    }
+  }
 
   try {
     if (isCareerTool) diagnostics.openaiCallStarted = true;
@@ -236,7 +303,7 @@ export async function POST(req: NextRequest) {
     diagnostics.missingTopLevelKeys = CAREER_TOP_LEVEL_KEYS.filter((k) => !keys.includes(k));
     diagnostics.unexpectedTopLevelKeys = keys.filter((k) => !CAREER_TOP_LEVEL_KEYS.includes(k));
 
-    const validatedOutput = isCareerTool ? careerPositioningOutputSchema.safeParse(candidateOutput) : strategicMessagingOutputSchema.safeParse(candidateOutput);
+    const validatedOutput = isEvidenceTool ? evidenceInPracticeOutputSchema.safeParse(candidateOutput) : isCareerTool ? careerPositioningOutputSchema.safeParse(candidateOutput) : strategicMessagingOutputSchema.safeParse(candidateOutput);
     if (!validatedOutput.success) {
       diagnostics.failureStep = 'structured_output_validation_failed';
       diagnostics.validationIssuePaths = validatedOutput.error.issues.map((i) => i.path.join('.'));
@@ -244,6 +311,11 @@ export async function POST(req: NextRequest) {
       return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
     }
     diagnostics.structuredOutputValidationPassed = true;
+    if (isEvidenceTool && !validateEvidenceSourceIntegrity(validatedOutput.data as any, evidenceSources)) {
+      diagnostics.failureStep = 'source_integrity_validation_failed';
+      console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
+      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+    }
 
     let nextGenerationsUsed = profile?.generations_used ?? 0;
     if (access.consumesFreeGeneration && session?.userId) {
@@ -280,7 +352,7 @@ export async function POST(req: NextRequest) {
     }
 
     console.info('[api/generate] career_positioning_diagnostics', diagnostics);
-    return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: validatedOutput.data, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: profile?.access_status ?? 'free' } }));
+    return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: validatedOutput.data, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: getEffectiveAccessStatus(profile) } }));
   } catch (error) {
     diagnostics.failureStep = diagnostics.openaiCallStarted && !diagnostics.openaiCallSucceeded ? 'openai_request_failed' : 'unknown_unhandled_exception';
     diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
