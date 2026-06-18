@@ -38,6 +38,22 @@ const strategicSchema = {
   required: ['strategicRewrite', 'whatChangedAndWhy', 'intentPreservationCheck', 'termsToReconsider', 'strongerAlternativePhrases', 'messageReadinessScore']
 };
 
+const evidenceInPracticeSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    evidenceSnapshot: { type: 'string' },
+    keyTakeaways: { type: 'array', items: { type: 'string' } },
+    whatAppearsMostEffective: { type: 'array', items: { type: 'string' } },
+    contextAndApplicability: { type: 'array', items: { type: 'string' } },
+    equityConsiderations: { type: 'array', items: { type: 'string' } },
+    practiceConsiderations: { type: 'array', items: { type: 'string' } },
+    evidenceGapsAndUnansweredQuestions: { type: 'array', items: { type: 'string' } },
+    sourcesReviewed: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { title: { type: 'string' }, year: { anyOf: [{ type: 'string' }, { type: 'number' }] }, journal: { type: 'string' }, pmid: { type: 'string' }, pubmedUrl: { type: 'string' } }, required: ['title', 'year', 'journal', 'pmid', 'pubmedUrl'] } }
+  },
+  required: ['evidenceSnapshot', 'keyTakeaways', 'whatAppearsMostEffective', 'contextAndApplicability', 'equityConsiderations', 'practiceConsiderations', 'evidenceGapsAndUnansweredQuestions', 'sourcesReviewed']
+};
+
 const careerSchema = {
   type: 'object',
   additionalProperties: false,
@@ -133,6 +149,7 @@ export type GenerationMetadata = {
 
 export async function runGeneration(tool: ToolConfig, input: string) {
   const isCareer = tool.toolId === 'career-positioning';
+  const isEvidence = tool.toolId === 'evidence-in-practice';
   const response = await openaiClient.responses.create({
     model: tool.model,
     temperature: tool.temperature,
@@ -144,8 +161,8 @@ export async function runGeneration(tool: ToolConfig, input: string) {
     text: {
       format: {
         type: 'json_schema',
-        name: isCareer ? 'career_positioning_output' : 'strategic_messaging_output',
-        schema: isCareer ? careerSchema : strategicSchema,
+        name: isEvidence ? 'evidence_in_practice_output' : isCareer ? 'career_positioning_output' : 'strategic_messaging_output',
+        schema: isEvidence ? evidenceInPracticeSchema : isCareer ? careerSchema : strategicSchema,
         strict: true
       }
     }

@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { FREE_GENERATIONS_LIMIT, allowedPaywallState, authPaywallState } from '@/lib/responses/api-responses';
+import { FREE_GENERATIONS_LIMIT, allowedPaywallState, authPaywallState, type AccessStatus } from '@/lib/responses/api-responses';
 import { isAllowedOrigin, preflightResponse, withCors } from '@/lib/security/cors';
 import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
+import { getEffectiveAccessStatus } from '@/lib/usage/access';
 
 export async function GET(req: NextRequest) {
   const requestOrigin = req.headers.get('origin');
@@ -38,19 +39,23 @@ export async function GET(req: NextRequest) {
 
     let emailVerified = false;
     let generationsUsed = 0;
-    let accessStatus = 'free';
+    let accessStatus: AccessStatus = 'free';
+    let rawAccessStatus: AccessStatus = 'free';
+    let accessExpiresAt: string | null = null;
 
     if (session?.userId) {
       const { data: profile } = await getSupabaseAdmin()
         .from('profiles')
-        .select('email_verified,generations_used,access_status')
+        .select('email_verified,generations_used,access_status,access_expires_at')
         .eq('id', session.userId)
         .maybeSingle();
       diagnostics.profileLoaded = Boolean(profile);
       if (profile) {
         emailVerified = Boolean(profile.email_verified);
         generationsUsed = Number(profile.generations_used || 0);
-        accessStatus = profile.access_status || 'free';
+        rawAccessStatus = (profile.access_status || 'free') as AccessStatus;
+        accessExpiresAt = profile.access_expires_at ?? null;
+        accessStatus = getEffectiveAccessStatus({ access_status: rawAccessStatus, access_expires_at: accessExpiresAt });
         diagnostics.profileVerified = emailVerified;
         diagnostics.usageLoaded = true;
         diagnostics.entitlementLoaded = true;
@@ -80,6 +85,8 @@ export async function GET(req: NextRequest) {
       freeGenerationsRemaining: remainingFreeGenerations,
       accessStatus,
       accessState: accessStatus,
+      rawAccessStatus,
+      accessExpiresAt,
       message: isVerified ? 'Authenticated.' : 'Authentication required.',
       paywallUrl: isVerified ? null : `${origin}/api/auth/start`,
       usage: {

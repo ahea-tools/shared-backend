@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateGenerationAccess } from '@/lib/usage/access';
+import { evaluateGenerationAccess, getEffectiveAccessStatus, isProfileAccessActive } from '@/lib/usage/access';
 import { allowedPaywallState, authPaywallState, blockedResponse, successResponse } from '@/lib/responses/api-responses';
 import { isEntitlementActivePaid } from '@/lib/membership/entitlements';
 import { parseSquarespaceEvent } from '@/lib/squarespace/parse-event';
@@ -133,8 +133,21 @@ describe('response shapes', () => {
   it('access code does not bypass email verification', () =>
     expect(evaluateGenerationAccess({ ...base, email_verified: false, access_status: 'comped' }, false).reason).toBe('email_unverified'));
 
-  it('expired access code is rejected', () =>
-    expect(evaluateGenerationAccess({ ...base, access_status: 'paid', access_expires_at: '2000-01-01T00:00:00Z' }, false).allowed).toBe(false));
+  it('expired access code does not grant paid access', () => {
+    const profile = { ...base, access_status: 'paid' as const, access_expires_at: '2000-01-01T00:00:00Z' };
+    expect(isProfileAccessActive(profile)).toBe(false);
+    expect(getEffectiveAccessStatus(profile)).toBe('free');
+  });
+
+  it('verified user with expired access and remaining free generations is allowed through free trial', () => {
+    const access = evaluateGenerationAccess({ ...base, access_status: 'paid', access_expires_at: '2000-01-01T00:00:00Z', generations_used: 1 }, false);
+    expect(access).toMatchObject({ allowed: true, consumesFreeGeneration: true });
+  });
+
+  it('verified user with expired access and exhausted free generations is blocked', () => {
+    const access = evaluateGenerationAccess({ ...base, access_status: 'paid', access_expires_at: '2000-01-01T00:00:00Z', generations_used: 2 }, false);
+    expect(access).toMatchObject({ allowed: false, reason: 'free_limit_reached' });
+  });
 
   it('access code max uses is enforced', () =>
     expect(true).toBe(true));

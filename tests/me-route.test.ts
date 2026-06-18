@@ -27,6 +27,17 @@ describe('/api/me session recognition', () => {
     expect(body.remainingFreeGenerations).toBe(0);
   });
 
+
+  it('expired paid access is reported as free effective access with raw status preserved', async () => {
+    h.getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null });
+    h.maybeSingleMock.mockResolvedValue({ data: { email_verified: true, generations_used: 1, access_status: 'paid', access_expires_at: '2000-01-01T00:00:00Z' } });
+    const body = await (await GET(new NextRequest('https://api.americanhealthequity.org/api/me'))).json();
+    expect(body.accessStatus).toBe('free');
+    expect(body.usage.accessStatus).toBe('free');
+    expect(body.rawAccessStatus).toBe('paid');
+    expect(body.remainingFreeGenerations).toBe(1);
+  });
+
   it('missing cookie returns unauthenticated safe response', async () => {
     h.getBackendSessionDetailsMock.mockResolvedValue({ session: null, failureReason: 'missing_cookie' });
     const body = await (await GET(new NextRequest('https://api.americanhealthequity.org/api/me'))).json();

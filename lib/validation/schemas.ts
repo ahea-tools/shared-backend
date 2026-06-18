@@ -84,6 +84,31 @@ export const careerPositioningOutputSchema = z.object({
   suggestedNextStep: z.array(z.string().min(1))
 });
 
+export const evidenceInPracticeInputSchema = z.object({
+  topic: z.string().trim().min(1, 'Topic is required.').max(500, 'Topic exceeds max length.'),
+  population: z.string().trim().min(1, 'Population cannot be empty.').max(300, 'Population exceeds max length.').optional(),
+  setting: z.string().trim().min(1, 'Setting cannot be empty.').max(300, 'Setting exceeds max length.').optional()
+});
+
+export const evidenceSourceSchema = z.object({
+  title: z.string().min(1),
+  year: z.union([z.string().min(1), z.number()]),
+  journal: z.string().min(1),
+  pmid: z.string().regex(/^\d+$/),
+  pubmedUrl: z.string().regex(/^https:\/\/pubmed\.ncbi\.nlm\.nih\.gov\/\d+\/$/)
+});
+
+export const evidenceInPracticeOutputSchema = z.object({
+  evidenceSnapshot: z.string().min(1),
+  keyTakeaways: z.array(z.string().min(1)),
+  whatAppearsMostEffective: z.array(z.string().min(1)),
+  contextAndApplicability: z.array(z.string().min(1)),
+  equityConsiderations: z.array(z.string().min(1)),
+  practiceConsiderations: z.array(z.string().min(1)),
+  evidenceGapsAndUnansweredQuestions: z.array(z.string().min(1)),
+  sourcesReviewed: z.array(evidenceSourceSchema)
+});
+
 export const generateSchema = z.object({
   toolId: z.string().min(1),
   input: z.unknown(),

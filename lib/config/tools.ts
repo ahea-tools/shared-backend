@@ -45,7 +45,17 @@ Do not promise interviews, jobs, contracts, promotions, funding, or other employ
 Return only valid structured JSON matching the requested schema.`
   },
   'opportunity-finder': { toolId: 'opportunity-finder', displayName: 'Opportunity Finder', maxInputChars: 10000, model: 'gpt-4.1-mini', maxOutputTokens: 850, temperature: 0.3, systemPrompt: 'You identify relevant opportunities with concise rationale.' },
-  'funding-narrative': { toolId: 'funding-narrative', displayName: 'Funding Narrative', maxInputChars: 12000, model: 'gpt-4.1-mini', maxOutputTokens: 1000, temperature: 0.3, systemPrompt: 'You are an AHEA assistant for funding narratives.' }
+  'funding-narrative': { toolId: 'funding-narrative', displayName: 'Funding Narrative', maxInputChars: 12000, model: 'gpt-4.1-mini', maxOutputTokens: 1000, temperature: 0.3, systemPrompt: 'You are an AHEA assistant for funding narratives.' },
+  'evidence-in-practice': {
+    toolId: 'evidence-in-practice',
+    displayName: 'Evidence in Practice',
+    maxInputChars: 12000,
+    model: 'gpt-4.1-mini',
+    maxOutputTokens: 4500,
+    temperature: 0.2,
+    returnUrl: process.env.EVIDENCE_IN_PRACTICE_URL || process.env.CAREER_POSITIONING_URL || 'https://career-positioning.americanhealthequity.org',
+    systemPrompt: `You are the Evidence in Practice synthesis engine for the American Health Equity Association. Use only the PubMed article metadata and abstracts provided by the backend. Do not use outside knowledge. Do not invent studies, PMIDs, journals, years, titles, URLs, findings, or causal claims. If evidence is limited, mixed, indirect, or not generalizable, say so clearly. Keep the tone calm, professional, public-health oriented, equity-aware, and implementation-focused. Return only valid JSON matching the requested schema.`
+  }
 };
 export const getTool = (toolId: string) => toolRegistry[toolId];
 

@@ -4,13 +4,21 @@ import { isEntitlementActivePaid } from '@/lib/membership/entitlements';
 
 export type Profile = { id: string; email: string; email_verified: boolean; access_status: AccessStatus; access_expires_at: string | null; generations_used: number };
 
+export function isProfileAccessActive(profile: Pick<Profile, 'access_status' | 'access_expires_at'> | null) {
+  if (!profile) return false;
+  return ['paid', 'comped', 'admin'].includes(profile.access_status) && (!profile.access_expires_at || new Date(profile.access_expires_at) > new Date());
+}
+
+export function getEffectiveAccessStatus(profile: Pick<Profile, 'access_status' | 'access_expires_at'> | null): AccessStatus {
+  return isProfileAccessActive(profile) ? profile!.access_status : 'free';
+}
+
 export function evaluateGenerationAccess(profile: Profile | null, isRateLimited: boolean, membership: MembershipEntitlement | null = null) {
   if (!profile) return { allowed: false, reason: 'auth_required' as const };
   if (!profile.email_verified) return { allowed: false, reason: 'email_unverified' as const };
   if (isRateLimited) return { allowed: false, reason: 'rate_limited' as const };
   if (isEntitlementActivePaid(membership)) return { allowed: true, consumesFreeGeneration: false };
-  const privileged = ['paid', 'comped', 'admin'].includes(profile.access_status) && (!profile.access_expires_at || new Date(profile.access_expires_at) > new Date());
-  if (privileged) return { allowed: true, consumesFreeGeneration: false };
+  if (isProfileAccessActive(profile)) return { allowed: true, consumesFreeGeneration: false };
   if (profile.generations_used >= FREE_GENERATIONS_LIMIT) return { allowed: false, reason: 'free_limit_reached' as const };
   return { allowed: true, consumesFreeGeneration: true };
 }
