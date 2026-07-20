@@ -53,27 +53,55 @@ describe('evidence-in-practice generate route', () => {
     expect(updateEqMock).not.toHaveBeenCalled();
   });
 
-  it('returns output only and increments usage after valid output and source integrity', async () => { const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'diabetes', population: 'rural', setting: 'clinic' } })); const body = await res.json(); expect(res.status).toBe(200); expect(body.output.evidenceSnapshot).toBe('snapshot'); expect(body.data).toBeUndefined(); expect(body.result).toBeUndefined(); expect(body.generation).toBeUndefined(); expect(body.content).toBeUndefined(); expect(updateEqMock).toHaveBeenCalledWith('id', 'u1'); });
+  it('returns output only and increments usage after valid output and source integrity', async () => { const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'diabetes', population: 'rural', setting: 'clinic' } })); const body = await res.json(); expect(res.status).toBe(200); expect(body.output.evidenceSnapshot).toBe('snapshot'); expect(body.output.sourcesReviewed).toEqual(output.sourcesReviewed); expect(body.data).toBeUndefined(); expect(body.result).toBeUndefined(); expect(body.generation).toBeUndefined(); expect(body.content).toBeUndefined(); expect(updateEqMock).toHaveBeenCalledWith('id', 'u1'); });
   it('insufficient evidence skips OpenAI and usage increment', async () => { retrievePubMedArticlesMock.mockResolvedValueOnce({ candidateCount: 1, usableCount: 1, selected: [articles[0]] }); const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'narrow' } })); const body = await res.json(); expect(res.status).toBe(200); expect(body.status).toBe('insufficient_evidence'); expect(runGenerationMock).not.toHaveBeenCalled(); expect(updateEqMock).not.toHaveBeenCalled(); });
 
-  it('rejects mismatched source title, journal, year, and URL without incrementing usage', async () => {
-    for (const badSource of [
-      { ...output.sourcesReviewed[0], title: 'Invented title' },
-      { ...output.sourcesReviewed[0], journal: 'Invented journal' },
-      { ...output.sourcesReviewed[0], year: '1999' },
-      { ...output.sourcesReviewed[0], pubmedUrl: 'https://example.com/101/' }
-    ]) {
+  it('canonicalizes altered model metadata, preserves PMID order, and omits abstracts', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ ...output, sourcesReviewed: [
+      { ...output.sourcesReviewed[1], title: 'Title 2!', journal: 'J 2', year: '2024 Jan', pubmedUrl: 'https://pubmed.ncbi.nlm.nih.gov/999/' },
+      { ...output.sourcesReviewed[0], title: 'Title 1?' }
+    ] }) });
+    const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }));
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.output.sourcesReviewed).toEqual([
+      { title: 'Title 2', year: '2024', journal: 'Journal 2', pmid: '102', pubmedUrl: 'https://pubmed.ncbi.nlm.nih.gov/102/' },
+      { title: 'Title 1', year: '2024', journal: 'Journal 1', pmid: '101', pubmedUrl: 'https://pubmed.ncbi.nlm.nih.gov/101/' }
+    ]);
+    expect(JSON.stringify(body.output.sourcesReviewed)).not.toContain('abstract');
+    expect(updateEqMock).toHaveBeenCalledWith('id', 'u1');
+  });
+
+  it('rejects unknown, fabricated, and empty source PMIDs without incrementing usage', async () => {
+    for (const pmid of ['999', '999999', '   ']) {
       vi.clearAllMocks();
       getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null });
       maybeSingleMock.mockResolvedValue({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 0 } });
       checkRateLimitMock.mockResolvedValue({ limited: false });
       retrievePubMedArticlesMock.mockResolvedValue({ candidateCount: 3, usableCount: 3, selected: articles });
-      runGenerationMock.mockResolvedValue({ outputText: JSON.stringify({ ...output, sourcesReviewed: [badSource] }) });
-      updateEqMock.mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: 'u1' }], error: null }) });
+      runGenerationMock.mockResolvedValue({ outputText: JSON.stringify({ ...output, sourcesReviewed: [{ ...output.sourcesReviewed[0], pmid }] }) });
       const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }));
       expect(res.status).toBe(502);
       expect(updateEqMock).not.toHaveBeenCalled();
     }
+  });
+
+  it('deduplicates duplicate PMIDs deterministically', async () => {
+    runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ ...output, sourcesReviewed: [output.sourcesReviewed[1], output.sourcesReviewed[1], output.sourcesReviewed[0]] }) });
+    const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }));
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.output.sourcesReviewed.map((source: { pmid: string }) => source.pmid)).toEqual(['102', '101']);
+  });
+
+  it('logs Evidence diagnostics with accurate OpenAI flags', async () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }));
+    expect(res.status).toBe(200);
+    const evidenceLog = infoSpy.mock.calls.find(([label]) => label === '[api/generate] evidence_in_practice_diagnostics');
+    expect(evidenceLog).toBeTruthy();
+    expect(evidenceLog?.[1]).toMatchObject({ openaiCallStarted: true, openaiCallSucceeded: true, openaiResponseHasOutput: true, sourceIntegrityPassed: true });
+    infoSpy.mockRestore();
   });
   it('malformed JSON, schema failures, source mismatches, pubmed/openai errors do not increment', async () => { runGenerationMock.mockResolvedValueOnce({ outputText: '{bad' }); expect((await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }))).status).toBe(502); runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ evidenceSnapshot: 'x' }) }); expect((await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }))).status).toBe(502); runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ ...output, sourcesReviewed: [{ ...output.sourcesReviewed[0], pmid: '999' }] }) }); expect((await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }))).status).toBe(502); retrievePubMedArticlesMock.mockRejectedValueOnce(new Error('down')); expect((await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }))).status).toBe(502); retrievePubMedArticlesMock.mockResolvedValueOnce({ candidateCount: 3, usableCount: 3, selected: articles }); runGenerationMock.mockRejectedValueOnce(new Error('openai down')); expect((await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'x' } }))).status).toBe(500); expect(updateEqMock).not.toHaveBeenCalled(); });
 });

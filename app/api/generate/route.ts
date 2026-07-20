@@ -37,14 +37,54 @@ const buildInsufficientEvidenceOutput = (sources: PubMedArticle[]) => ({
   sourcesReviewed: sources.map(({ title, year, journal, pmid, pubmedUrl }) => ({ title, year, journal, pmid, pubmedUrl }))
 });
 
-const validateEvidenceSourceIntegrity = (output: { sourcesReviewed: Array<{ title: string; year: string | number; journal: string; pmid: string; pubmedUrl: string }> }, sources: PubMedArticle[]) => {
-  const byPmid = new Map(sources.map((s) => [s.pmid, s]));
-  for (const source of output.sourcesReviewed) {
-    const selected = byPmid.get(source.pmid);
-    if (!selected) return false;
-    if (source.title !== selected.title || source.journal !== selected.journal || String(source.year) !== String(selected.year) || source.pubmedUrl !== selected.pubmedUrl) return false;
+type EvidenceSourceIntegrityResult = {
+  output: { sourcesReviewed: Array<{ title: string; year: string | number; journal: string; pmid: string; pubmedUrl: string }> } | null;
+  diagnostics: {
+    modelReferencedPmids: string[];
+    selectedBackendPmids: string[];
+    unknownReferencedPmids: string[];
+    duplicateReferencedPmids: string[];
+    canonicalizedSourceCount: number;
+    sourceIntegrityPassed: boolean;
+  };
+};
+
+const normalizePmid = (pmid: unknown) => typeof pmid === 'string' || typeof pmid === 'number' ? String(pmid).trim() : '';
+
+const canonicalizeEvidenceSourcesReviewed = <T extends { sourcesReviewed: Array<{ title: string; year: string | number; journal: string; pmid: string; pubmedUrl: string }> }>(output: T, sources: PubMedArticle[]): EvidenceSourceIntegrityResult => {
+  const byPmid = new Map(sources.map((source) => [normalizePmid(source.pmid), source]));
+  const modelReferencedPmids = output.sourcesReviewed.map((source) => normalizePmid(source.pmid));
+  const selectedBackendPmids = sources.map((source) => normalizePmid(source.pmid));
+  const seen = new Set<string>();
+  const duplicateSet = new Set<string>();
+  const unknownSet = new Set<string>();
+  const canonicalSources: Array<{ title: string; year: string | number; journal: string; pmid: string; pubmedUrl: string }> = [];
+
+  for (const pmid of modelReferencedPmids) {
+    if (!/^\d+$/.test(pmid) || !byPmid.has(pmid)) {
+      unknownSet.add(pmid);
+      continue;
+    }
+    if (seen.has(pmid)) {
+      duplicateSet.add(pmid);
+      continue;
+    }
+    seen.add(pmid);
+    const { title, year, journal, pmid: authoritativePmid, pubmedUrl } = byPmid.get(pmid)!;
+    canonicalSources.push({ title, year, journal, pmid: authoritativePmid, pubmedUrl });
   }
-  return true;
+
+  const diagnostics = {
+    modelReferencedPmids,
+    selectedBackendPmids,
+    unknownReferencedPmids: [...unknownSet],
+    duplicateReferencedPmids: [...duplicateSet],
+    canonicalizedSourceCount: canonicalSources.length,
+    sourceIntegrityPassed: unknownSet.size === 0 && canonicalSources.length > 0
+  };
+
+  if (!diagnostics.sourceIntegrityPassed) return { output: null, diagnostics };
+  return { output: { ...output, sourcesReviewed: canonicalSources }, diagnostics };
 };
 
 const sanitizeErrorMessage = (value: unknown) => {
@@ -95,6 +135,7 @@ const safeParseJsonOutput = (input: unknown): SafeJsonParseResult => {
 };
 const toIssueDetails = (issues: Array<{ path: (string | number)[]; message: string }>) => issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }));
 const invalidRequest = (message: string, details: Array<{ path: string; message: string }> = []) => NextResponse.json({ status: 'error', reason: 'invalid_request', message, details }, { status: 400 });
+const generationDiagnosticsLabel = (isEvidenceTool: boolean) => isEvidenceTool ? '[api/generate] evidence_in_practice_diagnostics' : '[api/generate] career_positioning_diagnostics';
 const safeGenerationError = (message = 'Generation failed. Please try again.', status = 500) => NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status });
 
 export async function POST(req: NextRequest) {
@@ -242,9 +283,9 @@ ${JSON.stringify(sourcePayload)}`;
   }
 
   try {
-    if (isCareerTool) diagnostics.openaiCallStarted = true;
+    if (isCareerTool || isEvidenceTool) diagnostics.openaiCallStarted = true;
     const result = await runGeneration(tool, inputText);
-    if (isCareerTool) diagnostics.openaiCallSucceeded = true;
+    if (isCareerTool || isEvidenceTool) diagnostics.openaiCallSucceeded = true;
     diagnostics.openaiResponseHasOutput = typeof result.outputText === 'string' && result.outputText.trim().length > 0;
     const parseDiagnostics = {
       outputTextLength: typeof result.outputText === 'string' ? result.outputText.length : null,
@@ -293,7 +334,7 @@ ${JSON.stringify(sourcePayload)}`;
     if (!parsedOutput.success && isCareerTool) {
       diagnostics.failureStep = 'openai_response_parse_failed';
       console.info('[api/generate] career_positioning_parse_diagnostics', parseDiagnostics);
-      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
       return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
     }
     diagnostics.openaiParsedOutputType = Array.isArray(candidateOutput) ? 'array' : typeof candidateOutput;
@@ -307,14 +348,20 @@ ${JSON.stringify(sourcePayload)}`;
     if (!validatedOutput.success) {
       diagnostics.failureStep = 'structured_output_validation_failed';
       diagnostics.validationIssuePaths = validatedOutput.error.issues.map((i) => i.path.join('.'));
-      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
       return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
     }
     diagnostics.structuredOutputValidationPassed = true;
-    if (isEvidenceTool && !validateEvidenceSourceIntegrity(validatedOutput.data as any, evidenceSources)) {
-      diagnostics.failureStep = 'source_integrity_validation_failed';
-      console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
-      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+    let responseOutput = validatedOutput.data;
+    if (isEvidenceTool) {
+      const canonicalized = canonicalizeEvidenceSourcesReviewed(validatedOutput.data as any, evidenceSources);
+      Object.assign(diagnostics, canonicalized.diagnostics);
+      if (!canonicalized.output) {
+        diagnostics.failureStep = 'source_integrity_validation_failed';
+        console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
+        return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+      }
+      responseOutput = canonicalized.output as typeof validatedOutput.data;
     }
 
     let nextGenerationsUsed = profile?.generations_used ?? 0;
@@ -331,7 +378,7 @@ ${JSON.stringify(sourcePayload)}`;
         diagnostics.failureStep = 'usage_logging_failed';
         diagnostics.sanitizedErrorName = 'SupabaseUpdateError';
         diagnostics.sanitizedErrorMessage = 'Failed to persist generations_used.';
-        console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+        console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
         return withCors(req, safeGenerationError());
       }
       diagnostics.updateSucceeded = true;
@@ -347,17 +394,17 @@ ${JSON.stringify(sourcePayload)}`;
       diagnostics.failureStep = 'generation_event_logging_failed';
       diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
       diagnostics.sanitizedErrorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+      console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
       return withCors(req, safeGenerationError());
     }
 
-    console.info('[api/generate] career_positioning_diagnostics', diagnostics);
-    return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: validatedOutput.data, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: getEffectiveAccessStatus(profile) } }));
+    console.info(isEvidenceTool ? '[api/generate] evidence_in_practice_diagnostics' : '[api/generate] career_positioning_diagnostics', diagnostics);
+    return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: responseOutput, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: getEffectiveAccessStatus(profile) } }));
   } catch (error) {
     diagnostics.failureStep = diagnostics.openaiCallStarted && !diagnostics.openaiCallSucceeded ? 'openai_request_failed' : 'unknown_unhandled_exception';
     diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
     diagnostics.sanitizedErrorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.info('[api/generate] career_positioning_diagnostics', diagnostics);
+    console.info(isEvidenceTool ? '[api/generate] evidence_in_practice_diagnostics' : '[api/generate] career_positioning_diagnostics', diagnostics);
     return withCors(req, safeGenerationError());
   }
 }
