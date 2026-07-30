@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import type { MemberMonthlyUsage } from '@/lib/usage/member-monthly';
 
 export type AccessStatus = 'free' | 'paid' | 'comped' | 'admin';
 export const FREE_GENERATIONS_LIMIT = 2;
@@ -24,9 +25,11 @@ export function authPaywallState(origin: string): PaywallState {
   return { show: true, variant: 'auth', ctaLabel: 'Verify email to continue', ctaUrl: `${origin}/api/auth/start`, message: AUTH_MESSAGE };
 }
 
-export function blockedResponse(reason: 'auth_required'|'email_unverified'|'free_limit_reached'|'rate_limited'|'invalid_tool'|'invalid_request', message: string, usage = { generationsUsed: 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: 0, accessStatus: 'free' as AccessStatus }) {
+export function blockedResponse(reason: 'auth_required'|'email_unverified'|'free_limit_reached'|'rate_limited'|'invalid_tool'|'invalid_request'|'member_monthly_limit_reached', message: string, usage = { generationsUsed: 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: 0, accessStatus: 'free' as AccessStatus }, memberMonthlyUsage: MemberMonthlyUsage | null = null) {
   const paywall: PaywallState = reason === 'auth_required' || reason === 'email_unverified'
     ? { show: true, variant: 'auth', message: AUTH_MESSAGE, ctaLabel: 'Verify email to continue', ctaUrl: null }
+    : reason === 'member_monthly_limit_reached'
+      ? allowedPaywallState()
     : reason === 'rate_limited'
       ? { show: true, variant: 'rate_limit', message, ctaLabel: null, ctaUrl: null }
       : reason === 'free_limit_reached'
@@ -35,9 +38,9 @@ export function blockedResponse(reason: 'auth_required'|'email_unverified'|'free
 
   const responseMessage = reason === 'free_limit_reached' ? FREE_LIMIT_MESSAGE : reason === 'auth_required' || reason === 'email_unverified' ? AUTH_MESSAGE : message;
 
-  return NextResponse.json({ status: 'blocked', reason: reason === 'free_limit_reached' ? 'free_trial_used' : reason, message: responseMessage, usage, paywall }, { status: reason === 'invalid_request' || reason === 'invalid_tool' ? 400 : 403 });
+  return NextResponse.json({ status: 'blocked', reason: reason === 'free_limit_reached' ? 'free_trial_used' : reason, message: responseMessage, usage, memberMonthlyUsage, paywall }, { status: reason === 'invalid_request' || reason === 'invalid_tool' ? 400 : 403 });
 }
 
-export function successResponse(params: { requestId: string; toolId: string; data: unknown; usage: { generationsUsed: number; freeGenerationsLimit: number; remainingFreeGenerations: number; accessStatus: AccessStatus } }) {
-  return NextResponse.json({ status: 'success', requestId: params.requestId, toolId: params.toolId, output: params.data, usage: params.usage, paywall: allowedPaywallState() });
+export function successResponse(params: { requestId: string; toolId: string; data: unknown; usage: { generationsUsed: number; freeGenerationsLimit: number; remainingFreeGenerations: number; accessStatus: AccessStatus }; memberMonthlyUsage?: MemberMonthlyUsage | null }) {
+  return NextResponse.json({ status: 'success', requestId: params.requestId, toolId: params.toolId, output: params.data, usage: params.usage, memberMonthlyUsage: params.memberMonthlyUsage ?? null, paywall: allowedPaywallState() });
 }
