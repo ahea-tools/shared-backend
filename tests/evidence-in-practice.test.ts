@@ -3,13 +3,14 @@ import { NextRequest } from 'next/server';
 import { getTool } from '@/lib/config/tools';
 import { buildESearchUrl, buildEFetchUrl, parseESearchIds, parseEFetchArticles } from '@/lib/pubmed';
 
-const { runGenerationMock, checkRateLimitMock, getBackendSessionDetailsMock, maybeSingleMock, updateEqMock, logGenerationEventMock, retrievePubMedArticlesMock } = vi.hoisted(() => ({
-  runGenerationMock: vi.fn(), checkRateLimitMock: vi.fn(), getBackendSessionDetailsMock: vi.fn(), maybeSingleMock: vi.fn(), updateEqMock: vi.fn(), logGenerationEventMock: vi.fn(), retrievePubMedArticlesMock: vi.fn()
+const { runGenerationMock, checkRateLimitMock, getBackendSessionDetailsMock, maybeSingleMock, updateEqMock, logGenerationEventMock, retrievePubMedArticlesMock, reserveMemberMock, finalizeMemberMock, releaseMemberMock } = vi.hoisted(() => ({
+  runGenerationMock: vi.fn(), checkRateLimitMock: vi.fn(), getBackendSessionDetailsMock: vi.fn(), maybeSingleMock: vi.fn(), updateEqMock: vi.fn(), logGenerationEventMock: vi.fn(), retrievePubMedArticlesMock: vi.fn(), reserveMemberMock: vi.fn(), finalizeMemberMock: vi.fn(), releaseMemberMock: vi.fn()
 }));
 vi.mock('@/lib/openai/generate', () => ({ runGeneration: runGenerationMock }));
 vi.mock('@/lib/rate-limit', () => ({ checkRateLimit: checkRateLimitMock }));
 vi.mock('@/lib/auth/session', () => ({ BACKEND_SESSION_COOKIE_NAME: 'ahea_session', getBackendSessionDetails: getBackendSessionDetailsMock }));
 vi.mock('@/lib/usage/events', () => ({ logGenerationEvent: logGenerationEventMock }));
+vi.mock('@/lib/usage/member-monthly', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/usage/member-monthly')>()), reserveMemberMonthlyGeneration: reserveMemberMock, finalizeMemberMonthlyGeneration: finalizeMemberMock, releaseMemberMonthlyGeneration: releaseMemberMock }));
 vi.mock('@/lib/pubmed', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/pubmed')>()), retrievePubMedArticles: retrievePubMedArticlesMock }));
 vi.mock('@/lib/supabase/server', () => ({ getSupabaseAdmin: () => ({ from: () => ({ select: () => ({ eq: () => ({ maybeSingle: maybeSingleMock }) }), update: () => ({ eq: updateEqMock }) }) }) }));
 import { POST } from '@/app/api/generate/route';
@@ -17,7 +18,7 @@ import { POST } from '@/app/api/generate/route';
 const articles = [1,2,3].map((n) => ({ pmid: `${100+n}`, title: `Title ${n}`, journal: `Journal ${n}`, year: '2024', abstract: 'This is a usable public health implementation abstract with enough detail for synthesis and equity considerations in practice settings.', pubmedUrl: `https://pubmed.ncbi.nlm.nih.gov/${100+n}/` }));
 const output = { evidenceSnapshot: 'snapshot', keyTakeaways: ['one'], whatAppearsMostEffective: ['two'], contextAndApplicability: ['three'], equityConsiderations: ['four'], practiceConsiderations: ['five'], evidenceGapsAndUnansweredQuestions: ['six'], sourcesReviewed: articles.map(({title,year,journal,pmid,pubmedUrl}) => ({title,year,journal,pmid,pubmedUrl})) };
 const makeReq = (body: unknown) => new NextRequest('http://localhost/api/generate', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
-beforeEach(() => { vi.clearAllMocks(); getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null }); maybeSingleMock.mockResolvedValue({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 0 } }); checkRateLimitMock.mockResolvedValue({ limited: false }); retrievePubMedArticlesMock.mockResolvedValue({ candidateCount: 3, usableCount: 3, selected: articles }); runGenerationMock.mockResolvedValue({ outputText: JSON.stringify(output) }); updateEqMock.mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: 'u1' }], error: null }) }); logGenerationEventMock.mockResolvedValue(undefined); });
+beforeEach(() => { vi.clearAllMocks(); getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1', email: 'u@example.com', iat: Date.now() }, failureReason: null }); maybeSingleMock.mockResolvedValue({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'free', access_expires_at: null, generations_used: 0 } }); checkRateLimitMock.mockResolvedValue({ limited: false }); retrievePubMedArticlesMock.mockResolvedValue({ candidateCount: 3, usableCount: 3, selected: articles }); runGenerationMock.mockResolvedValue({ outputText: JSON.stringify(output) }); updateEqMock.mockReturnValue({ select: vi.fn().mockResolvedValue({ data: [{ id: 'u1' }], error: null }) }); logGenerationEventMock.mockResolvedValue(undefined); reserveMemberMock.mockResolvedValue({ reserved: true, usage: { generationsUsed: 1, generationsLimit: 100, remainingGenerations: 99, periodStart: '2026-07-01T05:00:00.000Z', periodEnd: '2026-08-01T05:00:00.000Z', resetsAt: '2026-08-01T05:00:00.000Z' } }); finalizeMemberMock.mockResolvedValue({ generationsUsed: 1, generationsLimit: 100, remainingGenerations: 99, periodStart: '2026-07-01T05:00:00.000Z', periodEnd: '2026-08-01T05:00:00.000Z', resetsAt: '2026-08-01T05:00:00.000Z' }); releaseMemberMock.mockResolvedValue(undefined); });
 
 describe('evidence-in-practice registry and PubMed utilities', () => {
   it('accepts evidence-in-practice and keeps existing tools', () => { expect(getTool('evidence-in-practice')?.toolId).toBe('evidence-in-practice'); expect(getTool('strategic-messaging')).toBeTruthy(); expect(getTool('career-positioning')).toBeTruthy(); expect(getTool('opportunity-finder')).toBeTruthy(); expect(getTool('funding-narrative')).toBeTruthy(); expect(getTool('unknown')).toBeUndefined(); });
@@ -55,6 +56,17 @@ describe('evidence-in-practice generate route', () => {
 
   it('returns output only and increments usage after valid output and source integrity', async () => { const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'diabetes', population: 'rural', setting: 'clinic' } })); const body = await res.json(); expect(res.status).toBe(200); expect(body.output.evidenceSnapshot).toBe('snapshot'); expect(body.output.sourcesReviewed).toEqual(output.sourcesReviewed); expect(body.data).toBeUndefined(); expect(body.result).toBeUndefined(); expect(body.generation).toBeUndefined(); expect(body.content).toBeUndefined(); expect(updateEqMock).toHaveBeenCalledWith('id', 'u1'); });
   it('insufficient evidence skips OpenAI and usage increment', async () => { retrievePubMedArticlesMock.mockResolvedValueOnce({ candidateCount: 1, usableCount: 1, selected: [articles[0]] }); const res = await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'narrow' } })); const body = await res.json(); expect(res.status).toBe(200); expect(body.status).toBe('insufficient_evidence'); expect(runGenerationMock).not.toHaveBeenCalled(); expect(updateEqMock).not.toHaveBeenCalled(); });
+
+  it('counts a valid insufficient-evidence result for an active member but preserves free behavior', async () => {
+    maybeSingleMock.mockResolvedValueOnce({ data: { id: 'u1', email: 'u@example.com', email_verified: true, access_status: 'paid', access_expires_at: null, generations_used: 2 } });
+    retrievePubMedArticlesMock.mockResolvedValueOnce({ candidateCount: 1, usableCount: 1, selected: [articles[0]] });
+    const body = await (await POST(makeReq({ toolId: 'evidence-in-practice', input: { topic: 'narrow' } }))).json();
+    expect(runGenerationMock).not.toHaveBeenCalled();
+    expect(finalizeMemberMock).toHaveBeenCalledOnce();
+    expect(body.memberMonthlyUsage.generationsUsed).toBe(1);
+    expect(updateEqMock).not.toHaveBeenCalled();
+  });
+
 
   it('canonicalizes altered model metadata, preserves PMID order, and omits abstracts', async () => {
     runGenerationMock.mockResolvedValueOnce({ outputText: JSON.stringify({ ...output, sourcesReviewed: [

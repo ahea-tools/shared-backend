@@ -11,6 +11,7 @@ import { checkRateLimit } from '@/lib/rate-limit';
 import { evaluateGenerationAccess, getEffectiveAccessStatus, type Profile } from '@/lib/usage/access';
 import { logGenerationEvent } from '@/lib/usage/events';
 import { retrievePubMedArticles, type PubMedArticle } from '@/lib/pubmed';
+import { finalizeMemberMonthlyGeneration, isMemberMonthlyAllowanceApplicable, releaseMemberMonthlyGeneration, reserveMemberMonthlyGeneration, type MemberMonthlyUsage } from '@/lib/usage/member-monthly';
 
 const CAREER_TOP_LEVEL_KEYS = ['careerPositioningSummary', 'transferableValueMap', 'experienceReframe', 'roleAndOpportunityFit', 'talkingPoints', 'suggestedNextStep'];
 const STRATEGIC_AUDIENCE_MAP: Record<string, string> = { 'leadership / board': 'leadership-board', funders: 'funders', policymakers: 'policymakers', 'community partners': 'community-partners', 'internal team': 'internal-team', 'general public': 'general-public' };
@@ -139,6 +140,7 @@ const generationDiagnosticsLabel = (isEvidenceTool: boolean) => isEvidenceTool ?
 const safeGenerationError = (message = 'Generation failed. Please try again.', status = 500) => NextResponse.json({ status: 'error', reason: 'generation_failed', message }, { status });
 
 export async function POST(req: NextRequest) {
+  const requestId = crypto.randomUUID();
   const sessionDetails = await getBackendSessionDetails();
   const session = sessionDetails.session;
   const hasSessionCookie = Boolean(req.cookies.get(BACKEND_SESSION_COOKIE_NAME)?.value);
@@ -252,6 +254,34 @@ export async function POST(req: NextRequest) {
   }
   if (isCareerTool) diagnostics.accessDecision = 'allowed';
 
+  const effectiveAccessStatus = getEffectiveAccessStatus(profile);
+  let memberRequestReserved = false;
+  let memberMonthlyUsage: MemberMonthlyUsage | null = null;
+  if (session?.userId && isMemberMonthlyAllowanceApplicable(effectiveAccessStatus)) {
+    try {
+      const reservation = await reserveMemberMonthlyGeneration(session.userId, requestId, tool.toolId);
+      memberMonthlyUsage = reservation.usage;
+      if (!reservation.reserved) {
+        const resetDate = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', month: 'long', day: 'numeric', year: 'numeric' }).format(new Date(reservation.usage.resetsAt));
+        return withCors(req, blockedResponse('member_monthly_limit_reached', `You’ve used your 100 tool generations for this calendar month. Your allowance resets on ${resetDate}. Your other membership benefits remain available.`, {
+          generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT,
+          remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: effectiveAccessStatus
+        }, reservation.usage));
+      }
+      memberRequestReserved = true;
+    } catch (error) {
+      diagnostics.failureStep = 'member_generation_reservation_failed';
+      return withCors(req, safeGenerationError());
+    }
+  }
+  const releaseAndReturn = async (response: NextResponse, reason: string) => {
+    if (memberRequestReserved) {
+      try { await releaseMemberMonthlyGeneration(requestId, reason); } catch (error) { console.error('[api/generate] member reservation release failed', { requestId, reason }); }
+      memberRequestReserved = false;
+    }
+    return withCors(req, response);
+  };
+
   if (isEvidenceTool) {
     diagnostics.accessDecision = 'allowed';
     try {
@@ -264,9 +294,9 @@ export async function POST(req: NextRequest) {
       if (pubmed.usableCount < EVIDENCE_MIN_USABLE_ABSTRACTS) {
         const insufficient = buildInsufficientEvidenceOutput(pubmed.selected);
         const valid = evidenceInPracticeOutputSchema.safeParse(insufficient);
-        if (!valid.success) return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+        if (!valid.success) return releaseAndReturn(safeGenerationError('Generation failed. Please try again.', 502), 'invalid_result');
         await logGenerationEvent({ tool_id: tool.toolId, user_id: session?.userId ?? null, status: 'insufficient_evidence' });
-        return withCors(req, NextResponse.json({ status: 'insufficient_evidence', requestId: crypto.randomUUID(), toolId: tool.toolId, output: valid.data, usage: { generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: getEffectiveAccessStatus(profile) }, paywall: { show: false, variant: 'none', ctaLabel: null, ctaUrl: null, message: null } }));
+        return releaseAndReturn(NextResponse.json({ status: 'insufficient_evidence', requestId, toolId: tool.toolId, output: valid.data, usage: { generationsUsed: profile?.generations_used ?? 0, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - (profile?.generations_used ?? 0)), accessStatus: getEffectiveAccessStatus(profile) }, paywall: { show: false, variant: 'none', ctaLabel: null, ctaUrl: null, message: null }, memberMonthlyUsage: memberRequestReserved ? await finalizeMemberMonthlyGeneration(requestId) : null }), 'completed');
       }
       const sourcePayload = pubmed.selected.map(({ pmid, title, journal, year, pubmedUrl, abstract }) => ({ pmid, title, journal, year, pubmedUrl, abstract }));
       inputText = `${inputText}
@@ -278,7 +308,7 @@ ${JSON.stringify(sourcePayload)}`;
       diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
       diagnostics.sanitizedErrorMessage = error instanceof Error ? sanitizeErrorMessage(error.message) : 'Unknown error';
       console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
-      return withCors(req, safeGenerationError('Evidence retrieval failed. Please try again.', 502));
+      return releaseAndReturn(safeGenerationError('Evidence retrieval failed. Please try again.', 502), 'pubmed_failure');
     }
   }
 
@@ -335,7 +365,7 @@ ${JSON.stringify(sourcePayload)}`;
       diagnostics.failureStep = 'openai_response_parse_failed';
       console.info('[api/generate] career_positioning_parse_diagnostics', parseDiagnostics);
       console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
-      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+      return releaseAndReturn(safeGenerationError('Generation failed. Please try again.', 502), 'invalid_result');
     }
     diagnostics.openaiParsedOutputType = Array.isArray(candidateOutput) ? 'array' : typeof candidateOutput;
     parseDiagnostics.parsedOutputType = diagnostics.openaiParsedOutputType;
@@ -349,7 +379,7 @@ ${JSON.stringify(sourcePayload)}`;
       diagnostics.failureStep = 'structured_output_validation_failed';
       diagnostics.validationIssuePaths = validatedOutput.error.issues.map((i) => i.path.join('.'));
       console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
-      return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+      return releaseAndReturn(safeGenerationError('Generation failed. Please try again.', 502), 'invalid_result');
     }
     diagnostics.structuredOutputValidationPassed = true;
     let responseOutput = validatedOutput.data;
@@ -359,7 +389,7 @@ ${JSON.stringify(sourcePayload)}`;
       if (!canonicalized.output) {
         diagnostics.failureStep = 'source_integrity_validation_failed';
         console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
-        return withCors(req, safeGenerationError('Generation failed. Please try again.', 502));
+        return releaseAndReturn(safeGenerationError('Generation failed. Please try again.', 502), 'invalid_result');
       }
       responseOutput = canonicalized.output as typeof validatedOutput.data;
     }
@@ -379,7 +409,7 @@ ${JSON.stringify(sourcePayload)}`;
         diagnostics.sanitizedErrorName = 'SupabaseUpdateError';
         diagnostics.sanitizedErrorMessage = 'Failed to persist generations_used.';
         console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
-        return withCors(req, safeGenerationError());
+        return releaseAndReturn(safeGenerationError(), 'generation_failure');
       }
       diagnostics.updateSucceeded = true;
       diagnostics.usageLoggingSucceeded = true;
@@ -395,17 +425,21 @@ ${JSON.stringify(sourcePayload)}`;
       diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
       diagnostics.sanitizedErrorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.info(generationDiagnosticsLabel(isEvidenceTool), diagnostics);
-      return withCors(req, safeGenerationError());
+      return releaseAndReturn(safeGenerationError(), 'generation_failure');
     }
 
     console.info(isEvidenceTool ? '[api/generate] evidence_in_practice_diagnostics' : '[api/generate] career_positioning_diagnostics', diagnostics);
-    return withCors(req, successResponse({ requestId: crypto.randomUUID(), toolId: tool.toolId, data: responseOutput, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: getEffectiveAccessStatus(profile) } }));
+    if (memberRequestReserved) {
+      memberMonthlyUsage = await finalizeMemberMonthlyGeneration(requestId);
+      memberRequestReserved = false;
+    }
+    return withCors(req, successResponse({ requestId, toolId: tool.toolId, data: responseOutput, usage: { generationsUsed: nextGenerationsUsed, freeGenerationsLimit: FREE_GENERATIONS_LIMIT, remainingFreeGenerations: Math.max(0, FREE_GENERATIONS_LIMIT - nextGenerationsUsed), accessStatus: getEffectiveAccessStatus(profile) }, memberMonthlyUsage }));
   } catch (error) {
     diagnostics.failureStep = diagnostics.openaiCallStarted && !diagnostics.openaiCallSucceeded ? 'openai_request_failed' : 'unknown_unhandled_exception';
     diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
     diagnostics.sanitizedErrorMessage = error instanceof Error ? error.message : 'Unknown error';
     console.info(isEvidenceTool ? '[api/generate] evidence_in_practice_diagnostics' : '[api/generate] career_positioning_diagnostics', diagnostics);
-    return withCors(req, safeGenerationError());
+    return releaseAndReturn(safeGenerationError(), 'generation_failure');
   }
 }
 

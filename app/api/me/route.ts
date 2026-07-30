@@ -4,6 +4,7 @@ import { isAllowedOrigin, preflightResponse, withCors } from '@/lib/security/cor
 import { BACKEND_SESSION_COOKIE_NAME, getBackendSessionDetails } from '@/lib/auth/session';
 import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { getEffectiveAccessStatus } from '@/lib/usage/access';
+import { getMemberMonthlyGenerationUsage, isMemberMonthlyAllowanceApplicable, type MemberMonthlyUsage } from '@/lib/usage/member-monthly';
 
 export async function GET(req: NextRequest) {
   const requestOrigin = req.headers.get('origin');
@@ -42,6 +43,7 @@ export async function GET(req: NextRequest) {
     let accessStatus: AccessStatus = 'free';
     let rawAccessStatus: AccessStatus = 'free';
     let accessExpiresAt: string | null = null;
+    let memberMonthlyUsage: MemberMonthlyUsage | null = null;
 
     if (session?.userId) {
       const { data: profile } = await getSupabaseAdmin()
@@ -56,6 +58,7 @@ export async function GET(req: NextRequest) {
         rawAccessStatus = (profile.access_status || 'free') as AccessStatus;
         accessExpiresAt = profile.access_expires_at ?? null;
         accessStatus = getEffectiveAccessStatus({ access_status: rawAccessStatus, access_expires_at: accessExpiresAt });
+        if (isMemberMonthlyAllowanceApplicable(accessStatus)) memberMonthlyUsage = await getMemberMonthlyGenerationUsage(session.userId);
         diagnostics.profileVerified = emailVerified;
         diagnostics.usageLoaded = true;
         diagnostics.entitlementLoaded = true;
@@ -87,6 +90,9 @@ export async function GET(req: NextRequest) {
       accessState: accessStatus,
       rawAccessStatus,
       accessExpiresAt,
+      memberMonthlyUsage,
+      generationAvailable: isVerified && (memberMonthlyUsage === null || memberMonthlyUsage.remainingGenerations > 0),
+      generationBlockReason: memberMonthlyUsage?.remainingGenerations === 0 ? 'member_monthly_limit_reached' : null,
       message: isVerified ? 'Authenticated.' : 'Authentication required.',
       paywallUrl: isVerified ? null : `${origin}/api/auth/start`,
       usage: {

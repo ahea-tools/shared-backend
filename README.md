@@ -180,3 +180,50 @@ Run:
 - `npm run typecheck`
 - `npm run build`
 - `npm test`
+
+## Member calendar-month generation allowance
+
+Active `paid` and `comped` profiles receive **100 completed tool generations per calendar month**, shared globally across every registered AHEA tool. The allowance belongs to the authenticated Supabase user and is not pooled or transferable. Administrators are exempt. Unused generations do not roll over.
+
+A calendar month begins at 12:00 a.m. on its first day in the IANA zone `America/Chicago`; this handles CST/CDT transitions rather than assuming a fixed UTC offset. A generation counts only after the backend has a valid result ready to return. A valid Evidence in Practice `insufficient_evidence` result counts for a member. Validation, authentication, verification, short-window rate-limit, monthly-limit, provider, parsing, structured-output, source-integrity, and other failed requests do not count.
+
+This is separate from the unchanged lifetime trial of two successful generations per verified email. `profiles.generations_used` remains the free-trial counter and was not repurposed. Upstash remains the existing short-window rate limiter; Supabase/Postgres is the durable monthly source of truth.
+
+`202607300001_member_monthly_generation_allowance.sql` creates the backend-only `member_generation_reservations` ledger and the `reserve_member_monthly_generation`, `finalize_member_monthly_generation`, `release_member_monthly_generation`, and `get_member_monthly_generation_usage` RPCs. Reservations expire after 30 minutes and are lazily marked expired. Per-user Postgres advisory transaction locks serialize reservations across tools.
+
+Applicable `/api/me` and `/api/generate` responses include:
+
+```json
+"memberMonthlyUsage": {
+  "generationsUsed": 27,
+  "generationsLimit": 100,
+  "remainingGenerations": 73,
+  "periodStart": "2026-07-01T05:00:00.000Z",
+  "periodEnd": "2026-08-01T05:00:00.000Z",
+  "resetsAt": "2026-08-01T05:00:00.000Z"
+}
+```
+
+Non-applicable free/admin accounts receive `memberMonthlyUsage: null`. `/api/me` also returns `generationAvailable` and `generationBlockReason`. Exhausted members retain `paid`/`comped` access and receive HTTP 403, reason `member_monthly_limit_reached`, a neutral paywall, reset timestamp, and the message “You’ve used your 100 tool generations for this calendar month. Your allowance resets on [reset date]. Your other membership benefits remain available.”
+
+### Migration and deployment
+
+1. Review this branch, validations, PR, and Vercel Preview build. A preview cannot exercise the RPCs against a database where this migration has not been applied; use a separately migrated non-production Supabase project for full preview testing.
+2. In the target Supabase dashboard SQL Editor, paste and run the complete contents of `supabase/migrations/202607300001_member_monthly_generation_allowance.sql` once (or run the repository's normal Supabase migration workflow). Confirm the table, four functions, RLS, grants, indexes, and trigger exist. The migration is additive and does not rewrite profiles or history.
+3. Apply the migration before production backend code depends on it, merge the PR, then deploy the `shared-backend-2` production project. No new environment variables are required.
+4. Verify designated test accounts with Hoppscotch. Complete frontend-repository display work only afterward; frontends must render backend values and must not calculate, reserve, or call usage RPCs.
+
+### Hoppscotch verification
+
+Use `https://api.americanhealthequity.org`, `Content-Type: application/json`, an allowed `Origin`, and the designated account's signed HTTP-only `ahea_session` cookie (obtained through the normal authentication flow). Never paste service-role/provider secrets into Hoppscotch. For POST examples use a valid registered-tool payload, such as `{"toolId":"strategic-messaging","input":{"message":"Example test message long enough for validation","audience":"general public","mode":"standard"}}`.
+
+1. **Paid below limit:** `GET /api/me`; expect 200, active `accessStatus: "paid"`, `memberMonthlyUsage`, `generationAvailable: true`, and no usage change. Confirm completed/reserved rows for only the designated user/current period.
+2. **Paid success:** `POST /api/generate` with the headers/cookie/body above; expect 200 and the existing output wrapper plus updated `memberMonthlyUsage`. Compare a subsequent authenticated `GET /api/me`: `generationsUsed` increased by one and `remainingGenerations` decreased by one; the reservation is `completed`.
+3. **Limit:** use a designated seeded preview/test account already at 100 (never edit a real member). POST as above; expect 403, `reason: "member_monthly_limit_reached"`, used 100, limit 100, remaining 0, `resetsAt`, active membership, and `paywall.show: false`. Repeat GET; expect `generationAvailable: false` and the same block reason/count. Confirm no additional row/count. Provider non-invocation must be verified through automated mocks or sanitized preview logs; production responses alone cannot prove it.
+4. **Comped:** repeat GET then POST with a designated active comped cookie; expect the same 100 allowance and one completed reservation.
+5. **Admin:** repeat GET then POST with an admin cookie; expect `memberMonthlyUsage: null`, successful generation, and no reservation row.
+6. **Free trial:** repeat with a verified free cookie; expect `memberMonthlyUsage: null`, unchanged lifetime limit 2, and `profiles.generations_used` to increment only on successful trial results.
+7. **Expired member:** repeat with a designated expired paid/comped cookie; expect effective `accessStatus: "free"`, `memberMonthlyUsage: null`, and existing free-trial behavior.
+8. **Failure cleanup:** in a safe preview/test environment induce a mocked provider failure after reservation; expect 500/502, unchanged monthly usage, and a `released` reservation. Then GET `/api/me`; expect the prior counts. Do not induce failures against live providers.
+
+For every request, retain the same allowed Origin and signed-session authentication state; inspect only sanitized logs and rows belonging to designated test accounts. Successful GET requests never change usage, successful applicable POST requests add exactly one completion, and blocked/failed POST requests add none.

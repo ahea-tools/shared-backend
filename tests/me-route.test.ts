@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 
-const h = vi.hoisted(() => ({ getBackendSessionDetailsMock: vi.fn(), maybeSingleMock: vi.fn() }));
+const h = vi.hoisted(() => ({ getBackendSessionDetailsMock: vi.fn(), maybeSingleMock: vi.fn(), getMemberUsageMock: vi.fn() }));
 vi.mock('@/lib/auth/session', () => ({ BACKEND_SESSION_COOKIE_NAME: 'ahea_session', getBackendSessionDetails: h.getBackendSessionDetailsMock }));
+vi.mock('@/lib/usage/member-monthly', async (importOriginal) => ({ ...(await importOriginal<typeof import('@/lib/usage/member-monthly')>()), getMemberMonthlyGenerationUsage: h.getMemberUsageMock }));
 vi.mock('@/lib/supabase/server', () => ({ getSupabaseAdmin: () => ({ from: () => ({ select: () => ({ eq: () => ({ maybeSingle: h.maybeSingleMock }) }) }) }) }));
 import { GET } from '@/app/api/me/route';
 
@@ -44,4 +45,22 @@ describe('/api/me session recognition', () => {
     expect(body.isAuthenticated).toBe(false);
     expect(body.accessStatus).toBe('free');
   });
+  it('returns accurate monthly usage and availability for active paid members', async () => {
+    h.getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1' }, failureReason: null });
+    h.maybeSingleMock.mockResolvedValue({ data: { email_verified: true, generations_used: 2, access_status: 'paid', access_expires_at: null } });
+    h.getMemberUsageMock.mockResolvedValue({ generationsUsed: 99, generationsLimit: 100, remainingGenerations: 1, periodStart: '2026-07-01T05:00:00.000Z', periodEnd: '2026-08-01T05:00:00.000Z', resetsAt: '2026-08-01T05:00:00.000Z' });
+    const body = await (await GET(new NextRequest('https://api.americanhealthequity.org/api/me'))).json();
+    expect(body.memberMonthlyUsage).toMatchObject({ generationsUsed: 99, remainingGenerations: 1 });
+    expect(body.generationAvailable).toBe(true);
+    expect(body.generationBlockReason).toBeNull();
+  });
+
+  it('returns null member usage for administrators', async () => {
+    h.getBackendSessionDetailsMock.mockResolvedValue({ session: { userId: 'u1' }, failureReason: null });
+    h.maybeSingleMock.mockResolvedValue({ data: { email_verified: true, generations_used: 2, access_status: 'admin', access_expires_at: null } });
+    const body = await (await GET(new NextRequest('https://api.americanhealthequity.org/api/me'))).json();
+    expect(body.memberMonthlyUsage).toBeNull();
+    expect(h.getMemberUsageMock).not.toHaveBeenCalled();
+  });
+
 });
