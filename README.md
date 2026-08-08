@@ -165,7 +165,8 @@ Frontend repos must not contain secrets (`OPENAI_API_KEY`, `SUPABASE_SERVICE_ROL
 - The backend retrieves PubMed metadata and abstracts with NCBI E-Utilities only after request validation, verified backend session/access approval, and rate-limit approval.
 - Tests mock NCBI and OpenAI; tests must not call live NCBI or live OpenAI.
 - Abstracts are held in memory for the request and are not persisted or logged.
-- If fewer than the configured minimum usable PubMed abstracts are retrieved, the backend returns an `insufficient_evidence` response with a schema-valid `output`, does not call OpenAI, and does not increment usage.
+- Evidence retrieval uses bounded internal OpenAI interpretation and batched relevance screening calls; these are part of the request and do not create separate generation events or usage increments.
+- If fewer than the configured minimum relevant PubMed abstracts remain after retrieval, the backend returns an `insufficient_evidence` response with a schema-valid `output`, skips final synthesis, and does not increment free-trial usage.
 - Vercel project `shared-backend-2` must define `NCBI_TOOL`, `NCBI_EMAIL`, and optionally `NCBI_API_KEY` as server-side environment variables only. Do not expose NCBI or backend secrets to frontend repos.
 - Production target remains `https://api.americanhealthequity.org`.
 

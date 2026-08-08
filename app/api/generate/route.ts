@@ -10,7 +10,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/server';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { evaluateGenerationAccess, getEffectiveAccessStatus, type Profile } from '@/lib/usage/access';
 import { logGenerationEvent } from '@/lib/usage/events';
-import { retrievePubMedArticles, type PubMedArticle } from '@/lib/pubmed';
+import { EvidenceRetrievalError, retrievePubMedArticles, type PubMedArticle } from '@/lib/pubmed';
 import { finalizeMemberMonthlyGeneration, isMemberMonthlyAllowanceApplicable, releaseMemberMonthlyGeneration, reserveMemberMonthlyGeneration, type MemberMonthlyUsage } from '@/lib/usage/member-monthly';
 
 const CAREER_TOP_LEVEL_KEYS = ['careerPositioningSummary', 'transferableValueMap', 'experienceReframe', 'roleAndOpportunityFit', 'talkingPoints', 'suggestedNextStep'];
@@ -287,9 +287,12 @@ export async function POST(req: NextRequest) {
     try {
       const validatedEvidenceInput = evidenceInPracticeInputSchema.parse(parsed.data.input);
       const pubmed = await retrievePubMedArticles(validatedEvidenceInput);
-      (diagnostics as any).pubmedESearchCandidateCount = pubmed.candidateCount;
-      (diagnostics as any).pubmedUsableAbstractCount = pubmed.usableCount;
-      (diagnostics as any).selectedSourceCount = pubmed.selected.length;
+      (diagnostics as any).primaryCandidateCount = pubmed.primaryCandidateCount ?? pubmed.candidateCount;
+      (diagnostics as any).primaryRelevantCount = pubmed.primaryRelevantCount ?? pubmed.usableCount;
+      (diagnostics as any).fallbackUsed = pubmed.fallbackUsed ?? false;
+      (diagnostics as any).fallbackCandidateCount = pubmed.fallbackCandidateCount ?? 0;
+      (diagnostics as any).fallbackRelevantCount = pubmed.fallbackRelevantCount ?? 0;
+      (diagnostics as any).finalSelectedSourceCount = pubmed.finalSelectedSourceCount ?? pubmed.selected.length;
       evidenceSources = pubmed.selected;
       if (pubmed.usableCount < EVIDENCE_MIN_USABLE_ABSTRACTS) {
         const insufficient = buildInsufficientEvidenceOutput(pubmed.selected);
@@ -304,7 +307,7 @@ export async function POST(req: NextRequest) {
 Retrieved PubMed abstracts (use only these):
 ${JSON.stringify(sourcePayload)}`;
     } catch (error) {
-      diagnostics.failureStep = 'pubmed_retrieval_failed';
+      diagnostics.failureStep = error instanceof EvidenceRetrievalError ? error.failureStep : 'pubmed_retrieval_failed';
       diagnostics.sanitizedErrorName = error instanceof Error ? error.name : 'UnknownError';
       diagnostics.sanitizedErrorMessage = error instanceof Error ? sanitizeErrorMessage(error.message) : 'Unknown error';
       console.info('[api/generate] evidence_in_practice_diagnostics', diagnostics);
