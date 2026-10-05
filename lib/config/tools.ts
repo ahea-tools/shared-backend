@@ -11,7 +11,7 @@ export type ToolConfig = {
 };
 
 export const toolRegistry: Record<string, ToolConfig> = {
-  'strategic-messaging': { toolId: 'strategic-messaging', displayName: 'Strategic Messaging', maxInputChars: 12000, model: 'gpt-4.1-mini', maxOutputTokens: 800, temperature: 0.4, systemPrompt: 'You are an AHEA assistant for strategic messaging.' },
+  'strategic-messaging': { toolId: 'strategic-messaging', displayName: 'Strategic Messaging', maxInputChars: 12000, model: 'gpt-4.1-mini', maxOutputTokens: 800, temperature: 0.4, returnUrl: process.env.STRATEGIC_MESSAGING_URL || 'https://strategic-messaging.americanhealthequity.org', systemPrompt: 'You are an AHEA assistant for strategic messaging.' },
   'career-positioning': {
     toolId: 'career-positioning',
     displayName: 'Career Positioning Tool',
